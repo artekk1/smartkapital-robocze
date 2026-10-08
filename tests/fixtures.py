@@ -5,77 +5,6 @@ from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 
-CIK = 1234567
-ACCN_10Q = "0001234567-26-000020"
-ACCN_10K = "0001234567-26-000005"
-
-
-def _fact(start, end, val, accn=ACCN_10Q, form="10-Q", filed="2026-08-05"):
-    d = {"end": end, "val": val, "accn": accn, "form": form, "filed": filed}
-    if start:
-        d["start"] = start
-    return d
-
-
-def companyfacts() -> dict:
-    """Rok obrotowy = kalendarzowy. Przychody rosną 20% r/r, CFO raportowane narastająco."""
-    rev = []
-    base = {2024: 100.0, 2025: 120.0, 2026: 144.0}
-    q_ranges = [("01-01", "03-31"), ("04-01", "06-30"), ("07-01", "09-30"), ("10-01", "12-31")]
-    for y, b in base.items():
-        for qi, (s, e) in enumerate(q_ranges):
-            if y == 2026 and qi > 1:
-                break
-            if qi == 3:
-                continue  # Q4 tylko w 10-K jako rok - 9M
-            rev.append(_fact(f"{y}-{s}", f"{y}-{e}", (b + qi) * 1e6))
-        if y < 2026:
-            rev.append(_fact(f"{y}-01-01", f"{y}-09-30", (3 * b + 3) * 1e6))
-            rev.append(_fact(f"{y}-01-01", f"{y}-12-31", (4 * b + 6) * 1e6, ACCN_10K, "10-K", f"{y + 1}-02-20"))
-    ocf = [
-        _fact("2024-01-01", "2024-06-30", 15e6, filed="2024-08-05"),
-        _fact("2024-01-01", "2024-12-31", 40e6, ACCN_10K, "10-K", "2025-02-20"),
-        _fact("2025-01-01", "2025-06-30", 18e6),
-        _fact("2025-01-01", "2025-12-31", 50e6, ACCN_10K, "10-K", "2026-02-20"),
-        _fact("2026-01-01", "2026-06-30", 30e6),
-    ]
-    capex = [
-        _fact("2024-01-01", "2024-06-30", 4e6, filed="2024-08-05"),
-        _fact("2024-01-01", "2024-12-31", 10e6, ACCN_10K, "10-K", "2025-02-20"),
-        _fact("2025-01-01", "2025-06-30", 5e6),
-        _fact("2025-01-01", "2025-12-31", 12e6, ACCN_10K, "10-K", "2026-02-20"),
-        _fact("2026-01-01", "2026-06-30", 6e6),
-    ]
-    op = [
-        _fact("2025-01-01", "2025-06-30", 20e6),
-        _fact("2025-01-01", "2025-12-31", 45e6, ACCN_10K, "10-K", "2026-02-20"),
-        _fact("2026-01-01", "2026-06-30", 28e6),
-    ]
-    da = [
-        _fact("2025-01-01", "2025-06-30", 4e6),
-        _fact("2025-01-01", "2025-12-31", 8e6, ACCN_10K, "10-K", "2026-02-20"),
-        _fact("2026-01-01", "2026-06-30", 5e6),
-    ]
-    ni = [
-        _fact("2025-01-01", "2025-06-30", 15e6),
-        _fact("2025-01-01", "2025-12-31", 33e6, ACCN_10K, "10-K", "2026-02-20"),
-        _fact("2026-01-01", "2026-06-30", 21e6),
-    ]
-    return {
-        "cik": CIK, "entityName": "Test Corp",
-        "facts": {
-            "RevenueFromContractWithCustomerExcludingAssessedTax": {"USD": rev},
-            "NetCashProvidedByUsedInOperatingActivities": {"USD": ocf},
-            "PaymentsToAcquirePropertyPlantAndEquipment": {"USD": capex},
-            "OperatingIncomeLoss": {"USD": op},
-            "DepreciationDepletionAndAmortization": {"USD": da},
-            "NetIncomeLoss": {"USD": ni},
-            "CashAndCashEquivalentsAtCarryingValue": {"USD": [_fact(None, "2026-06-30", 80e6)]},
-            "LongTermDebt": {"USD": [_fact(None, "2026-06-30", 30e6)]},
-            "EntityCommonStockSharesOutstanding": {"shares": [_fact(None, "2026-07-31", 50e6)]},
-        },
-    }
-
 
 def prices(today: date, n: int = 520, beta: float = 1.6, seed: int = 7):
     """(benchmark, akcja) jako odpowiedzi Yahoo chart: hossa, spadek ~45%, baza, odbicie."""
@@ -104,48 +33,49 @@ def prices(today: date, n: int = 520, beta: float = 1.6, seed: int = 7):
     return chart(rb, 400.0), chart(rs, 20.0, vol_spike=True)
 
 
-def submissions(today: date) -> dict:
-    f = lambda d: (today - timedelta(days=d)).isoformat()
-    rows = [
-        ("0001234567-26-000020", f(64), "2026-06-30", "10-Q", "", "test-20260630.htm"),
-        ("0001234567-26-000030", f(20), "", "4", "", "xslF345X05/wk-form4_1.xml"),
-        ("0001234567-26-000031", f(30), "", "8-K", "2.02,9.01", "ex.htm"),
-        ("0001234567-24-000040", f(900), "", "S-8", "", "s8.htm"),
-    ]
-    keys = ["accessionNumber", "filingDate", "reportDate", "form", "items", "primaryDocument"]
-    return {"cik": str(CIK), "name": "Test Corp", "sic": "3674", "sicDescription": "Semiconductors",
-            "addresses": {"business": {"stateOrCountry": "CA", "stateOrCountryDescription": "CA"}},
-            "filings": {"recent": {k: [r[i] for r in rows] for i, k in enumerate(keys)}, "files": []}}
+def _ts(type_, points, period="3M"):
+    return {"meta": {"symbol": ["TEST"], "type": [type_]}, "timestamp": [0] * len(points),
+            type_: [{"asOfDate": d, "periodType": period, "currencyCode": "USD",
+                     "reportedValue": {"raw": v, "fmt": ""}} for d, v in points]}
 
 
-FORM4_XML = """<?xml version="1.0"?>
-<ownershipDocument>
-  <issuer><issuerCik>0001234567</issuerCik><issuerTradingSymbol>TEST</issuerTradingSymbol></issuer>
-  <reportingOwner>
-    <reportingOwnerId><rptOwnerName>Doe Jane</rptOwnerName></reportingOwnerId>
-    <reportingOwnerRelationship><isDirector>0</isDirector><isOfficer>1</isOfficer><officerTitle>CEO</officerTitle></reportingOwnerRelationship>
-  </reportingOwner>
-  <nonDerivativeTable>
-    <nonDerivativeTransaction>
-      <transactionDate><value>{d}</value></transactionDate>
-      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
-      <transactionAmounts>
-        <transactionShares><value>10000</value></transactionShares>
-        <transactionPricePerShare><value>12.50</value></transactionPricePerShare>
-        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
-      </transactionAmounts>
-    </nonDerivativeTransaction>
-  </nonDerivativeTable>
-</ownershipDocument>"""
+QUARTERS = ["2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"]
 
-FINVIZ_HTML = """<html><body><table class="js-snapshot-table snapshot-table2 screener_snapshot-table-body">
-<tr><td class="snapshot-td2">Market Cap</td><td class="snapshot-td2"><b>1.05B</b></td>
-<td class="snapshot-td2">Short Float</td><td class="snapshot-td2"><b><span>18.40%</span></b></td></tr>
-<tr><td class="snapshot-td2">Short Ratio</td><td class="snapshot-td2"><b>6.10</b></td>
-<td class="snapshot-td2">Beta</td><td class="snapshot-td2"><b>1.75</b></td></tr>
-<tr><td class="snapshot-td2">Earnings</td><td class="snapshot-td2"><b>Nov 05 AMC</b></td>
-<td class="snapshot-td2">Shs Float</td><td class="snapshot-td2"><b>45.20M</b></td></tr>
-</table></body></html>"""
+
+def yahoo_timeseries(shares_6m_ago: float = 50e6, unusual: float = 1e6) -> dict:
+    """Przychody +19,8% r/r, FCF TTM 49 mln (rok wcześniej 32 mln), gotówka netto, 50 mln akcji."""
+    return {"timeseries": {"result": [
+        _ts("quarterlyTotalRevenue", list(zip(QUARTERS, [121e6, 122e6, 123e6, 144e6, 145e6]))),
+        _ts("trailingFreeCashFlow", [("2025-06-30", 32e6), ("2026-06-30", 49e6)], "TTM"),
+        _ts("quarterlyTotalDebt", [("2026-06-30", 45e6)]),
+        _ts("quarterlyCapitalLeaseObligations", [("2026-06-30", 15e6)]),
+        _ts("quarterlyCashCashEquivalentsAndShortTermInvestments", [("2026-06-30", 80e6)]),
+        _ts("trailingEBITDA", [("2026-06-30", 62e6)], "TTM"),
+        _ts("quarterlyOrdinarySharesNumber", list(zip(QUARTERS, [49e6, 49.5e6, shares_6m_ago, 50e6, 50e6]))),
+        _ts("trailingNetIncome", [("2026-06-30", 39e6)], "TTM"),
+        _ts("trailingTotalUnusualItems", [("2026-06-30", unusual)], "TTM"),
+        {"meta": {"symbol": ["TEST"], "type": ["quarterlyEBITDA"]}, "timestamp": []},
+    ]}}
+
+
+def finviz_page(news_rows: list[tuple[str, str]] | None = None) -> str:
+    snap = [("Index", "RUT"), ("Market Cap", "712.00M"), ("P/FCF", "14.20"), ("Sales Q/Q", "19.80%"),
+            ("Earnings", "Nov 05 AMC"), ("Shs Float", "45.20M"), ("Short Float", "18.40%"), ("Short Ratio", "6.10"),
+            ("52W High", "23.37 -39.00%"), ("Beta", "1.75"), ("Insider Trans", "2.10%")]
+    cells = "".join(f'<td class="snapshot-td2"><div class="snapshot-td-label"><a href="x">{k}</a></div></td>'
+                    f'<td class="snapshot-td2"><div class="snapshot-td-content"><b>{v}</b></div></td>' for k, v in snap)
+    news_rows = news_rows or [("Oct-01-26 08:00AM", "Test Corp Wins Multi-Year Contract"),
+                              ("07:00AM", "Test Corp to Present at Conference")]
+    news = "".join(f'<tr class="cursor-pointer"><td width="130" align="right">{d}</td><td><div class="news-link-left">'
+                   f'<a class="tab-link-news" href="/news/{i}/x" target="_blank">{t}</a></div>'
+                   f'<div class="news-link-right"><span>(Business Wire)</span></div></td></tr>'
+                   for i, (d, t) in enumerate(news_rows))
+    return (f'<div><a href="screener?v=111&f=sec_technology" class="quote-header_category">Technology</a>'
+            f'<a href="screener?v=111&f=ind_semiconductors" class="quote-header_category"><span>Semiconductors</span></a>'
+            f'<a href="screener?v=111&f=geo_usa" class="quote-header_category">USA</a></div>'
+            f'<table class="js-snapshot-table snapshot-table2 screener_snapshot-table-body"><tr>{cells}</tr></table>'
+            f'<table id="news-table" class="news-table">{news}</table>')
+
 
 NASDAQ_SHORT = {"data": {"symbol": "TEST", "shortInterestTable": {"rows": [
     {"settlementDate": "09/15/2026", "interest": "8,300,000", "avgDailyShareVolume": "1,200,000", "daysToCover": "6.92"},
@@ -154,6 +84,28 @@ NASDAQ_SHORT = {"data": {"symbol": "TEST", "shortInterestTable": {"rows": [
 
 NASDAQ_EARNINGS = {"data": {"announcement": "Earnings announcement* for TEST: Nov 05, 2026",
                             "reportText": "Test Corp is expected to report earnings on 11/05/2026 after market close."}}
+
+
+NASDAQ_EARNINGS = {"data": {"announcement": "Earnings announcement* for TEST: Nov 05, 2026",
+                            "reportText": "Test Corp is expected to report earnings on 11/05/2026 after market close."}}
+
+NASDAQ_EARNINGS_EST = {"data": {"announcement": "", "reportText":
+    "Test Corp is estimated to report earnings on  11/05/2026. The upcoming earnings date is derived from an algorithm."}}
+
+
+
+def nasdaq_filings(rows: list[tuple[str, str]] | None = None) -> dict:
+    rows = rows or [("4", "09/20/2026"), ("8-K", "08/05/2026"), ("10-Q", "08/05/2026"), ("S-8", "05/01/2026")]
+    return {"data": {"rows": [{"formType": f, "filed": d, "reportingOwner": "", "view": {"htmlLink": f"https://q/{i}"}}
+                              for i, (f, d) in enumerate(rows)]}}
+
+
+def nasdaq_insider(rows: list[tuple] | None = None) -> dict:
+    rows = rows or [("DOE JANE", "CEO", "9/18/2026", "Buy", "10,000", "$12.50"),
+                    ("ROE RICH", "Director", "4/02/2026", "Sell", "200,000", "$20.00")]
+    return {"data": {"transactionTable": {"totalRecords": str(len(rows)), "table": {"rows": [
+        {"insider": a, "relation": b, "lastDate": c, "transactionType": d, "ownType": "Direct",
+         "sharesTraded": e, "lastPrice": f, "sharesHeld": "1"} for a, b, c, d, e, f in rows]}}}}
 
 
 def screener(exchange: str) -> dict:
@@ -170,5 +122,3 @@ def screener(exchange: str) -> dict:
     return {"data": {"rows": rows}}
 
 
-SEC_TICKERS = {"fields": ["cik", "name", "ticker", "exchange"],
-               "data": [[CIK, "Test Corp", "TEST", "Nasdaq"], [7654321, "China Co", "CHN", "Nasdaq"]]}

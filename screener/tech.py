@@ -100,6 +100,17 @@ def technicals(df: pd.DataFrame, bench: pd.DataFrame) -> dict:
             if breakout is None or (cand["ok"] and not breakout["ok"]):
                 breakout = cand
 
+    # Poziom unieważnienia: zamknięcie poniżej ostatniego dołka pod kursem (wyższy dołek przestaje
+    # istnieć) albo poniżej SMA50 - 3% (kurs wraca pod średnią); bierzemy poziom bliższy kursowi.
+    lows_below = [p for p in pivot_lows(low.tail(126), 5) if p[1] < price]
+    candidates = []
+    if lows_below:
+        d, v = lows_below[-1]
+        candidates.append((v, f"ostatni dołek z {d.date().isoformat()}"))
+    if not np.isnan(sma_now) and sma_now < price:
+        candidates.append((sma_now * 0.97, "SMA50 - 3%"))
+    invalidation = max(candidates) if candidates else (None, "")
+
     dollar_vol = float((close * vol).tail(50).mean())
     b, b_n = beta(df, bench)
     return {
@@ -118,6 +129,8 @@ def technicals(df: pd.DataFrame, bench: pd.DataFrame) -> dict:
         "breakout": breakout,
         "breakout_volume": bool(breakout and breakout["ok"]),
         "avg_dollar_volume_50d": dollar_vol,
+        "invalidation": invalidation[0],
+        "invalidation_basis": invalidation[1],
         "beta": b,
         "beta_weeks": b_n,
         "sessions": n,

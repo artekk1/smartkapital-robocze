@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from screener import edgar, market, run, scoring, xbrl
+from screener import checks, market, run, scoring, yahoo
 from screener.net import Doc, Fetcher, NotFound
 from screener.tech import from_stooq_csv, from_yahoo_chart, technicals
 from tests import fixtures as fx
@@ -15,45 +15,31 @@ from tests import fixtures as fx
 TODAY = date(2026, 10, 8)
 
 
-def slim():
-    return fx.companyfacts()
+def read_csv(path):
+    with open(path, encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
 
 
-class XbrlTest(unittest.TestCase):
-    def test_revenue_quarters_and_derived_q4(self):
-        rq = xbrl.revenue_quarters(slim())
-        self.assertAlmostEqual(rq[date(2025, 12, 31)].val, 123e6)  # 486 - 363
-        cur, prev = xbrl.yoy(rq)
-        self.assertEqual(cur.end, date(2026, 6, 30))
-        self.assertAlmostEqual(cur.val / prev.val - 1, 145 / 121 - 1)
+class YahooTest(unittest.TestCase):
+    def test_fundamentals(self):
+        m = yahoo.fundamentals(yahoo.parse_timeseries(fx.yahoo_timeseries()))
+        self.assertAlmostEqual(m["rev_growth"], 145 / 121 - 1)
+        self.assertEqual((m["fcf_ttm"], m["fcf_ttm_prev"]), (49e6, 32e6))
+        self.assertEqual(m["debt"], 30e6)  # 45 mln długu minus 15 mln leasingu
+        self.assertTrue(m["net_cash"])
+        self.assertAlmostEqual(m["net_debt_ebitda"], -50 / 62)
+        self.assertAlmostEqual(m["shares_chg_6m"], 0.0)
+        self.assertFalse(m["one_off"])
+        self.assertEqual(m["missing"], [])
 
-    def test_ttm_from_ytd(self):
-        fcf, capex_found = xbrl.fcf_ttm(slim())
-        self.assertTrue(capex_found)
-        # CFO 50 + 30 - 18 = 62, capex 12 + 6 - 5 = 13
-        self.assertAlmostEqual(fcf[date(2026, 6, 30)].val, 49e6)
-        cur, prev = xbrl.yoy(fcf, tol=15)
-        self.assertAlmostEqual(prev.val, (40 + 18 - 15 - (10 + 5 - 4)) * 1e6)
+    def test_one_off_and_dilution_signal(self):
+        m = yahoo.fundamentals(yahoo.parse_timeseries(fx.yahoo_timeseries(shares_6m_ago=45e6, unusual=15e6)))
+        self.assertTrue(m["one_off"])  # 15 mln > 25% z 39 mln zysku
+        self.assertAlmostEqual(m["shares_chg_6m"], 50 / 45 - 1)
 
-    def test_restated_fact_wins(self):
-        s = slim()
-        s["facts"]["NetIncomeLoss"]["USD"].append(
-            {"start": "2025-01-01", "end": "2025-12-31", "val": 30e6, "accn": "x", "form": "10-K/A", "filed": "2026-05-01"})
-        f = [x for x in xbrl.facts_for(s, "NetIncomeLoss") if x.end == date(2025, 12, 31)]
-        self.assertEqual(len(f), 1)
-        self.assertEqual(f[0].val, 30e6)
-
-    def test_cash_debt_ebitda_shares(self):
-        s = slim()
-        cd = xbrl.cash_and_debt(s)
-        self.assertEqual((cd["cash"], cd["debt"]), (80e6, 30e6))
-        self.assertAlmostEqual(xbrl.ebitda_ttm(s, date(2026, 6, 30)).val, (53 + 9) * 1e6)
-        self.assertEqual(xbrl.shares_outstanding(s).val, 50e6)
-
-    def test_slim_keeps_needed_tags_only(self):
-        full = {"cik": 1, "entityName": "X", "facts": {"us-gaap": {
-            "Revenues": {"units": {"USD": []}}, "SomethingElse": {"units": {"USD": []}}}}}
-        self.assertEqual(list(xbrl.slim_companyfacts(full)["facts"]), ["Revenues"])
+    def test_url_has_all_types(self):
+        url = yahoo.timeseries_url("BRK/B", TODAY)
+        self.assertIn("/BRK-B?type=quarterlyTotalRevenue,", url)
 
 
 class TechTest(unittest.TestCase):
@@ -69,47 +55,36 @@ class TechTest(unittest.TestCase):
         self.assertLess(t["dist_from_high"], -0.25)
         self.assertTrue(t["above_sma50"])
         self.assertTrue(t["sma50_turning_up"])
-        self.assertGreater(t["avg_dollar_volume_50d"], 2e6)
+        self.assertLess(t["invalidation"], t["price"])
+        self.assertTrue(t["invalidation_basis"])
 
-
-class EdgarTest(unittest.TestCase):
-    def test_form4_and_insider_summary(self):
-        txs = edgar.parse_form4(fx.FORM4_XML.format(d="2026-09-20"))
-        self.assertEqual(txs[0]["code"], "P")
-        self.assertEqual(txs[0]["role"], "CEO")
-        s = edgar.insider_summary(txs, TODAY)
-        self.assertEqual((s["buy_usd"], s["sell_usd"]), (125000.0, 0))
-        old = edgar.insider_summary(edgar.parse_form4(fx.FORM4_XML.format(d="2026-05-01")), TODAY)
-        self.assertEqual(old["buy_usd"], 0)
-
-    def test_dilution_and_delisting(self):
-        rows = edgar.filings_table({"filings": {"recent": {
-            "accessionNumber": ["a-1", "a-2", "a-3", "a-4", "a-5"],
-            "filingDate": ["2026-09-01", "2025-01-10", "2023-01-01", "2026-03-01", "2026-02-01"],
-            "reportDate": ["", "", "", "", ""],
-            "form": ["424B5", "S-3", "S-3", "8-K", "424B5"],
-            "items": ["", "", "", "3.01,9.01", ""],
-            "primaryDocument": ["", "", "", "", ""]}}})
-        kinds = [d["kind"] for d in edgar.dilution_events(rows, 1, TODAY)]
-        self.assertEqual(len(kinds), 2)  # 424B5 z 1.09 i S-3 z 2025; S-3 z 2023 i 424B5 sprzed 6 mies. odpadają
-        self.assertEqual(len(edgar.delisting_events(rows, 1, TODAY)), 1)
-
-    def test_form4_raw_document_url(self):
-        rows = edgar.filings_table(fx.submissions(TODAY))
-        docs = edgar.form4_docs(rows, fx.CIK, TODAY)
-        self.assertTrue(docs[0]["url"].endswith("/000123456726000030/wk-form4_1.xml"))
+    def test_stooq_error_page_is_rejected(self):
+        with self.assertRaises(ValueError):
+            from_stooq_csv("Exceeded the daily hits limit")
 
 
 class MarketTest(unittest.TestCase):
-    def test_parsers(self):
-        snap = market.finviz_snapshot(fx.FINVIZ_HTML)
-        self.assertEqual(snap["Short Float"], "18.40%")
-        self.assertEqual(market.num(snap["Shs Float"]), 45.2e6)
-        self.assertEqual(market.finviz_earnings_date(snap["Earnings"], TODAY), date(2026, 11, 5))
+    def test_finviz(self):
+        page = fx.finviz_page()
+        snap = market.finviz_snapshot(page)
+        self.assertEqual((snap["Short Float"], snap["Beta"], snap["52W High"]), ("18.40%", "1.75", "23.37 -39.00%"))
+        self.assertEqual(market.finviz_categories(page),
+                         {"sector": "Technology", "industry": "Semiconductors", "country": "USA"})
+        news = market.finviz_news(page, TODAY)
+        self.assertEqual([n["date"] for n in news], [date(2026, 10, 1)] * 2)  # wiersz z samą godziną dziedziczy datę
+        self.assertEqual(news[0]["source"], "Business Wire")
+        self.assertEqual(market.finviz_news(fx.finviz_page([("Today 07:30AM", "X")]), TODAY)[0]["date"], TODAY)
+        self.assertEqual(market.finviz_earnings_date("Nov 05 AMC", TODAY), date(2026, 11, 5))
         self.assertIsNone(market.finviz_earnings_date("Aug 05 AMC", TODAY))
+
+    def test_nasdaq(self):
         si = market.nasdaq_short_interest(fx.NASDAQ_SHORT)
         self.assertEqual((si["settlement_date"], si["days_to_cover"]), ("2026-09-15", 6.92))
-        self.assertEqual(market.nasdaq_earnings_date(fx.NASDAQ_EARNINGS), date(2026, 11, 5))
+        self.assertEqual(market.nasdaq_earnings_date(fx.NASDAQ_EARNINGS), (date(2026, 11, 5), False))
+        self.assertEqual(market.nasdaq_earnings_date(fx.NASDAQ_EARNINGS_EST), (date(2026, 11, 5), True))
+        self.assertEqual(market.nasdaq_filings(fx.nasdaq_filings())[0]["filed"], date(2026, 9, 20))
+        tr = market.nasdaq_insider_trades(fx.nasdaq_insider())
+        self.assertEqual((tr[0]["type"], tr[0]["value"]), ("Buy", 125000.0))
 
     def test_universe_exclusion(self):
         rows = market.screener_rows(fx.screener("nasdaq"), "Nasdaq")
@@ -117,6 +92,34 @@ class MarketTest(unittest.TestCase):
         self.assertEqual(market.universe_exclusion(
             {"symbol": "ABCU", "name": "Alpha Acquisition Corp", "country": "United States", "industry": ""}),
             "SPAC (nazwa)")
+
+
+class ChecksTest(unittest.TestCase):
+    def test_dilution(self):
+        filings = market.nasdaq_filings(fx.nasdaq_filings([("S-3", "06/01/2026"), ("424B5", "09/01/2026"),
+                                                           ("424B5", "01/02/2026"), ("S-8", "09/01/2026")]))
+        news = [{"date": date(2026, 9, 2), "title": "Test Corp Establishes $50 Million At-The-Market Program", "url": "u"},
+                {"date": date(2026, 9, 3), "title": "Test Corp Prices $300 Million Senior Notes Offering", "url": "u"}]
+        ev = checks.dilution(filings, {"shares_chg_6m": 0.06, "shares_end": date(2026, 6, 30)}, news, TODAY)
+        kinds = [e["kind"] for e in ev]
+        self.assertEqual(kinds, ["shelf S-3", "prospekt 424B5", "liczba akcji +6.0% w 6 mies.", "program ATM (wiadomość)"])
+        self.assertTrue(checks.has_atm(ev))
+        self.assertEqual(checks.dilution([], {"shares_chg_6m": 0.02}, [], TODAY), [])
+
+    def test_red_flags(self):
+        news = [{"date": date(2026, 3, 1), "title": "Test Corp Receives Nasdaq Minimum Bid Price Deficiency Notice"},
+                {"date": date(2026, 5, 1), "title": "Test Corp Regains Compliance with Nasdaq Listing Rule"},
+                {"date": date(2026, 9, 1), "title": "ROSEN LAW FIRM Files Securities Class Action Lawsuit Against Test Corp"},
+                {"date": date(2026, 9, 2), "title": "Pomerantz Law Firm Investigates Claims On Behalf of Investors of Test Corp"}]
+        f = checks.red_flags(news, TODAY)
+        self.assertEqual((f["delisting"], f["going_concern"]), ([], []))
+        self.assertEqual(len(f["legal"]), 1)
+        self.assertEqual(len(f["verify"]), 1)
+        self.assertTrue(checks.red_flags(news[:1], TODAY)["delisting"])
+
+    def test_insiders_window(self):
+        ins = checks.insiders(market.nasdaq_insider_trades(fx.nasdaq_insider()), TODAY)
+        self.assertEqual((ins["buy_usd"], ins["sell_usd"]), (125000.0, 0))
 
 
 class ScoringTest(unittest.TestCase):
@@ -127,6 +130,8 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(scoring.hard_filter_failures(self.base), [])
         self.assertEqual(len(scoring.hard_filter_failures({**self.base, "beta": 1.1, "going_concern": True})), 2)
         self.assertTrue(scoring.hard_filter_failures({**self.base, "rev_growth": None}))
+        self.assertTrue(scoring.hard_filter_failures({**self.base, "beta_finviz": 1.1}))
+        self.assertTrue(scoring.hard_filter_failures({**self.base, "dist_from_high_finviz": -0.2}))
 
     def test_dilution_disqualifies_squeeze(self):
         s = scoring.score({**self.base, "dilution": True, "short_float": 0.2})
@@ -145,25 +150,19 @@ class ScoringTest(unittest.TestCase):
 class FakeFetcher(Fetcher):
     """Serwuje odpowiedzi z fixture'ów zamiast sieci."""
 
-    def __init__(self):
+    def __init__(self, finviz=None, filings=None, timeseries=None):
         self.calls = []
         bench, stock = fx.prices(TODAY)
-        cf = fx.companyfacts()
-        full = {"cik": fx.CIK, "entityName": "Test Corp", "facts": {
-            "us-gaap": {k: {"units": v} for k, v in cf["facts"].items() if not k.startswith("Entity")},
-            "dei": {k: {"units": v} for k, v in cf["facts"].items() if k.startswith("Entity")}}}
         self.routes = [
             ("api/screener/stocks", lambda u: fx.screener(u.rsplit("=", 1)[1])),
-            ("company_tickers_exchange", lambda u: fx.SEC_TICKERS),
-            ("submissions/CIK0001234567", lambda u: fx.submissions(TODAY)),
-            ("companyfacts/CIK0001234567", lambda u: full),
             ("chart/SPY", lambda u: bench),
             ("chart/TEST", lambda u: stock),
-            ("efts.sec.gov", lambda u: {"hits": {"hits": []}}),
-            ("wk-form4_1.xml", lambda u: fx.FORM4_XML.format(d="2026-09-18")),
-            ("finviz.com", lambda u: fx.FINVIZ_HTML),
+            ("timeseries/TEST", lambda u: timeseries or fx.yahoo_timeseries()),
+            ("finviz.com", lambda u: finviz or fx.finviz_page()),
             ("short-interest", lambda u: fx.NASDAQ_SHORT),
             ("earnings-date", lambda u: fx.NASDAQ_EARNINGS),
+            ("sec-filings", lambda u: filings or fx.nasdaq_filings()),
+            ("insider-trades", lambda u: fx.nasdaq_insider()),
         ]
 
     def get(self, url, as_json=True, transform=None):
@@ -175,67 +174,80 @@ class FakeFetcher(Fetcher):
         raise NotFound(url)
 
 
-def stooq_csv(chart_js):
-    df, _ = from_yahoo_chart(chart_js)
-    lines = ["Date,Open,High,Low,Close,Volume"]
-    lines += [f"{i.date()},{r.open},{r.high},{r.low},{r.close},{r.volume:.0f}" for i, r in df.iterrows()]
-    return "\n".join(lines) + "\n"
+def run_fake(tmp, *extra, **kw):
+    args = ["--out", tmp, "--as-of", TODAY.isoformat(), "--overrides", f"{tmp}/none.csv", "--notes", f"{tmp}/none.json"]
+    return run.main(args + list(extra), fetcher=FakeFetcher(**kw))
 
 
 class EndToEndTest(unittest.TestCase):
-    def test_stooq_fallback_when_yahoo_fails(self):
-        f = FakeFetcher()
-        stock = fx.prices(TODAY)[1]
-        f.routes = [r for r in f.routes if r[0] != "chart/TEST"] + [("stooq.com", lambda u: stooq_csv(stock))]
-        with tempfile.TemporaryDirectory() as tmp:
-            run.main(["--out", tmp, "--as-of", TODAY.isoformat(), "--overrides", f"{tmp}/none.csv"], fetcher=f)
-            self.assertIn("https://stooq.com/q/d/l/?s=test.us&i=d", f.calls)
-            src = list(csv.DictReader(open(Path(tmp) / "sources.csv", encoding="utf-8")))
-            self.assertEqual({s["zrodlo"] for s in src if s["metryka"] == "kurs"}, {"Stooq (wyliczone)"})
-            rows = list(csv.DictReader(open(Path(tmp) / "results.csv", encoding="utf-8")))
-            self.assertEqual([r["ticker"] for r in rows], ["TEST"])
-
-    def test_stooq_error_page_is_rejected(self):
-        with self.assertRaises(ValueError):
-            from_stooq_csv("Exceeded the daily hits limit")
-
     def test_full_run(self):
         with tempfile.TemporaryDirectory() as tmp:
-            f = FakeFetcher()
-            rc = run.main(["--out", tmp, "--as-of", TODAY.isoformat(), "--overrides", f"{tmp}/none.csv"], fetcher=f)
-            self.assertEqual(rc, 0)
-            rows = list(csv.DictReader(open(Path(tmp) / "results.csv", encoding="utf-8")))
+            self.assertEqual(run_fake(tmp), 0)
+            rows = read_csv(Path(tmp) / "results.csv")
             self.assertEqual([r["ticker"] for r in rows], ["TEST"])
             r = rows[0]
-            self.assertEqual(r["wzrost_przychodow_rr"], "19.8%")
-            self.assertEqual(r["short_float"], "18.4%")
-            self.assertEqual(r["days_to_cover"], "6.9")
-            self.assertEqual(r["pkt_squeeze"], "2")
-            self.assertEqual(r["pkt_katalizator"], "2")
-            self.assertIn("wyniki 2026-11-05", r["katalizatory"])
-            self.assertEqual(r["gotowka_netto"], "tak")
-            self.assertEqual(r["fcf_ttm_usd"], "49,000,000")
-            src = list(csv.DictReader(open(Path(tmp) / "sources.csv", encoding="utf-8")))
-            self.assertTrue(all(s["data_danych"] for s in src))
-            excl = list(csv.DictReader(open(Path(tmp) / "excluded.csv", encoding="utf-8")))
-            self.assertEqual({e["ticker"] for e in excl}, {"TESTW", "CHN"})
-            self.assertIn("TEST", (Path(tmp) / "raport.md").read_text(encoding="utf-8"))
+            self.assertEqual(list(r)[:16], ["ticker", "spolka", "sektor", "kapitalizacja_usd", "p_fcf",
+                                           "wzrost_przychodow_rr", "beta", "odleglosc_od_szczytu", "short_float",
+                                           "days_to_cover", "pkt_fundamenty", "pkt_technika", "pkt_squeeze",
+                                           "pkt_katalizator", "kary", "wynik"])
+            self.assertEqual((r["wzrost_przychodow_rr"], r["short_float"], r["days_to_cover"]), ("19.8%", "18.4%", "6.9"))
+            self.assertEqual((r["pkt_squeeze"], r["pkt_katalizator"], r["top10"]), ("2", "2", "tak"))
+            self.assertEqual(r["sektor"], "Technology")
+            self.assertTrue(all(s["data_danych"] for s in read_csv(Path(tmp) / "sources.csv")))
+            self.assertEqual({e["ticker"] for e in read_csv(Path(tmp) / "excluded.csv")}, {"TESTW", "CHN"})
+            rep = (Path(tmp) / "raport.md").read_text(encoding="utf-8")
+            for section in ("## TOP 1", "### 1. TEST", "**Teza.**", "**Ryzyko.**", "**Najbliższy katalizator.** wyniki",
+                            "**Poziom unieważnienia.**", "najlepszych kandydatów na short squeeze", "| 1 | TEST |",
+                            "## Odrzucone w ostatniej chwili", "## Metodologia i ograniczenia", "**Data danych.**"):
+                self.assertIn(section, rep)
+
+    def test_self_check_removes_atm_from_top(self):
+        page = fx.finviz_page([("Sep-10-26 08:00AM", "Test Corp Enters Into At-The-Market Equity Offering Program")])
+        with tempfile.TemporaryDirectory() as tmp:
+            run_fake(tmp, finviz=page)
+            r = read_csv(Path(tmp) / "results.csv")[0]
+            self.assertEqual(r["top10"], "")
+            self.assertTrue(r["dyskwalifikacja"])  # ATM przy kandydacie na squeeze
+            rep = (Path(tmp) / "raport.md").read_text(encoding="utf-8")
+            late = rep.split("## Odrzucone w ostatniej chwili")[1].split("## Metodologia")[0]
+            self.assertIn("aktywny program ATM", late)
+            self.assertIn("## TOP 0", rep)
+
+    def test_red_flag_drops_company_late(self):
+        page = fx.finviz_page([("Sep-10-26 08:00AM", "Test Corp Receives Nasdaq Notice of Delinquency and Deficiency")])
+        with tempfile.TemporaryDirectory() as tmp:
+            run_fake(tmp, finviz=page)
+            self.assertEqual(read_csv(Path(tmp) / "results.csv"), [])
+            rep = (Path(tmp) / "raport.md").read_text(encoding="utf-8")
+            self.assertIn("F6: groźba delistingu", rep)
 
     def test_override_wins_and_logs_discrepancy(self):
         with tempfile.TemporaryDirectory() as tmp:
             ov = Path(tmp) / "ov.csv"
             ov.write_text("ticker,metric,value,source_url,as_of,note\n"
-                          "TEST,rev_growth,0.12,https://www.sec.gov/x,2026-06-30,10-Q str. 4\n"
-                          "TEST,top_customer_share,0.35,https://www.sec.gov/x,2026-06-30,\n", encoding="utf-8")
-            run.main(["--out", tmp, "--as-of", TODAY.isoformat(), "--overrides", str(ov)], fetcher=FakeFetcher())
-            r = next(csv.DictReader(open(Path(tmp) / "results.csv", encoding="utf-8")))
+                          "TEST,rev_growth,0.12,https://example.org/q2,2026-06-30,komunikat wynikowy\n"
+                          "TEST,top_customer_share,0.35,https://example.org/10k,2025-12-31,\n"
+                          "TEST,catalyst,Kontrakt rządowy,https://example.org/pr,2026-10-01,\n", encoding="utf-8")
+            run.main(["--out", tmp, "--as-of", TODAY.isoformat(), "--overrides", str(ov), "--notes", f"{tmp}/x.json"],
+                     fetcher=FakeFetcher())
+            r = read_csv(Path(tmp) / "results.csv")[0]
             self.assertEqual(r["wzrost_przychodow_rr"], "12.0%")
-            self.assertIn("klient > 30%", r["kary"])
-            disc = {d["metryka"]: d for d in csv.DictReader(open(Path(tmp) / "discrepancies.csv", encoding="utf-8"))}
-            self.assertEqual(disc["rev_growth"]["raport"], "0.12")
-            self.assertEqual(disc["rev_growth"]["zrodlo_raportu"], "https://www.sec.gov/x")
-            # top_customer_share nie miał wartości ze screenera, więc to nie rozbieżność
-            self.assertNotIn("top_customer_share", disc)
+            self.assertIn("klient > 30%", r["opis_kar"])
+            disc = [d for d in read_csv(Path(tmp) / "discrepancies.csv") if d["metryka"] == "rev_growth"]
+            self.assertEqual(disc[0]["sprawozdanie_lub_wyliczenie"], "0.12")
+
+    def test_notes_render_in_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notes = Path(tmp) / "notes.json"
+            notes.write_text('{"TEST": {"teza": "Teza testowa.", "ryzyko": "Ryzyko testowe.", '
+                             '"katalizator": "Wyniki Q3 2026-11-05", "zrodla": [{"url": "https://example.org", "opis": "PR"}]}}',
+                             encoding="utf-8")
+            run.main(["--out", tmp, "--as-of", TODAY.isoformat(), "--overrides", f"{tmp}/none.csv", "--notes", str(notes)],
+                     fetcher=FakeFetcher())
+            rep = (Path(tmp) / "raport.md").read_text(encoding="utf-8")
+            self.assertIn("**Teza.** Teza testowa.", rep)
+            self.assertIn("**Najbliższy katalizator.** Wyniki Q3 2026-11-05", rep)
+            self.assertIn("[PR](https://example.org)", rep)
 
 
 if __name__ == "__main__":

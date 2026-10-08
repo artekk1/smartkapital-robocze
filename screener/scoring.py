@@ -31,10 +31,18 @@ def hard_filter_failures(m: dict) -> list[str]:
         fails.append("F4: kurs mniej niż 25% pod 52-tyg. szczytem")
     if not m.get("above_sma50"):
         fails.append("F5: kurs pod SMA50")
+    bf = m.get("beta_finviz")
+    if _ok(bf) and bf <= 1.2:
+        fails.append(f"F3: beta wg Finviz {bf:.2f} <= 1,2")
+    dff = m.get("dist_from_high_finviz")
+    if _ok(dff) and dff > -0.25:
+        fails.append(f"F4: wg Finviz tylko {dff * 100:.1f}% pod 52-tyg. szczytem")
     if m.get("going_concern"):
         fails.append("F6: ostrzeżenie going concern")
     if m.get("delisting"):
-        fails.append("F6: groźba delistingu (8-K 3.01)")
+        fails.append("F6: groźba delistingu")
+    if m.get("exclude"):
+        fails.append(f"weryfikacja ręczna: {m['exclude']}")
     return fails
 
 

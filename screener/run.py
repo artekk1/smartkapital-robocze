@@ -5,21 +5,20 @@ import argparse
 import csv
 import json
 import math
-import os
 import sys
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
-from . import edgar, market, xbrl
-from .net import Doc, Fetcher, FetchError, NotFound
+from . import checks, market, yahoo
+from .net import Fetcher, FetchError
 from .scoring import CAP_MAX, CAP_MIN, hard_filter_failures, score
 from .tech import from_stooq_csv, from_yahoo_chart, technicals
 
-# Margines przy wstępnym filtrze kapitalizacji z Nasdaq; ostateczny filtr liczymy
-# z liczby akcji z raportu SEC x kurs.
-CAP_BUFFER = 0.2
-MAX_FORM4_PER_COMPANY = 60
+# Wstępny filtr kapitalizacji z Nasdaq z marginesem; ostateczny: akcje ze sprawozdania x kurs.
+CAP_BUFFER = 0.1
+TOP_N = 10
+SQUEEZE_N = 5
 
 
 def log(msg: str) -> None:
@@ -30,8 +29,12 @@ def norm_ticker(sym: str) -> str:
     return sym.upper().replace("/", "-").replace(".", "-")
 
 
+def iso(d) -> str:
+    return d.isoformat() if hasattr(d, "isoformat") else str(d or "")
+
+
 class Sources:
-    """Rejestr pochodzenia: każda liczba trafia tu ze źródłem i datą."""
+    """Rejestr pochodzenia: każda liczba trafia tu ze źródłem, URL-em i datą danych."""
 
     def __init__(self):
         self.rows: list[dict] = []
@@ -39,304 +42,9 @@ class Sources:
     def add(self, ticker, metric, value, source, url, as_of, retrieved="", note=""):
         if isinstance(value, float):
             value = round(value, 6)
-        self.rows.append({"ticker": ticker, "metryka": metric, "wartosc": value, "zrodlo": source,
-                          "url": url, "data_danych": str(as_of), "pobrano": retrieved, "uwagi": note})
+        self.rows.append({"ticker": ticker, "metryka": metric, "wartosc": value, "zrodlo": source, "url": url,
+                          "data_danych": iso(as_of), "pobrano": retrieved, "uwagi": note})
 
-
-def xbrl_src(v: xbrl.Value) -> str:
-    forms = sorted({f"{p.form} złożony {p.filed.isoformat()}" for p in v.parts})
-    tags = sorted({p.tag for p in v.parts})
-    return f"SEC XBRL ({', '.join(tags)}; {'; '.join(forms)})"
-
-
-def xbrl_url(cik: int, v: xbrl.Value) -> str:
-    latest = max(v.parts, key=lambda p: p.filed)
-    return edgar.archive_url(cik, latest.accn)
-
-
-def load_prices(f: Fetcher, symbol: str):
-    """Notowania dzienne: Yahoo, a gdy niedostępne - Stooq. Zwraca (DataFrame, Doc, nazwa źródła)."""
-    try:
-        doc = f.get(market.YAHOO_CHART_URL.format(sym=market.yahoo_symbol(symbol)))
-        return from_yahoo_chart(doc.data)[0], doc, "Yahoo Finance chart API"
-    except (FetchError, ValueError, KeyError) as yahoo_err:
-        try:
-            doc = f.get(market.STOOQ_URL.format(sym=market.yahoo_symbol(symbol).lower()), as_json=False)
-            return from_stooq_csv(doc.data), doc, "Stooq"
-        except (FetchError, ValueError, KeyError) as stooq_err:
-            raise FetchError(f"Yahoo: {yahoo_err}; Stooq: {stooq_err}") from stooq_err
-
-
-# ---------------------------------------------------------------- etap 2: fundamenty
-
-def fundamentals(t: str, cik: int, slim: dict, cf_doc: Doc, src: Sources, today: date) -> tuple[dict, list[str]]:
-    m: dict = {}
-    notes: list[str] = []
-    rq = xbrl.revenue_quarters(slim)
-    pair = xbrl.yoy(rq)
-    if pair is None:
-        return m, ["brak porównywalnych przychodów kwartalnych w XBRL"]
-    cur, prev = pair
-    m["revenue_q"], m["revenue_q_prev"], m["revenue_q_end"] = cur.val, prev.val, cur.end
-    m["rev_growth"] = cur.val / prev.val - 1 if prev.val > 0 else float("nan")
-    src.add(t, "przychody_kw", cur.val, xbrl_src(cur), xbrl_url(cik, cur), cur.end, cf_doc.retrieved_at)
-    src.add(t, "przychody_kw_rok_wczesniej", prev.val, xbrl_src(prev), xbrl_url(cik, prev), prev.end, cf_doc.retrieved_at)
-    src.add(t, "wzrost_przychodow_rr", m["rev_growth"], "wyliczone z dwóch powyższych", "", cur.end)
-    if cur.val <= 0:
-        notes.append("spółka przed przychodami")
-    if (today - cur.end).days > 200:
-        notes.append(f"nieaktualne dane: ostatni kwartał kończy się {cur.end}")
-
-    fcf_pts, capex_found = xbrl.fcf_ttm(slim)
-    if not fcf_pts:
-        return m, notes + ["brak CFO/capex w XBRL"]
-    fcf_end = max(fcf_pts)
-    fcf = fcf_pts[fcf_end]
-    m["fcf_ttm"], m["fcf_end"] = fcf.val, fcf_end
-    src.add(t, "fcf_ttm", fcf.val, xbrl_src(fcf) + " CFO - capex, TTM", xbrl_url(cik, fcf), fcf_end, cf_doc.retrieved_at,
-            "" if capex_found else "brak capex w XBRL: FCF = CFO, do weryfikacji")
-    if not capex_found:
-        m.setdefault("verify", []).append("brak capex w XBRL (FCF = CFO)")
-    if fcf_end < cur.end:
-        m.setdefault("verify", []).append(f"FCF TTM na {fcf_end}, przychody na {cur.end}")
-    fpair = xbrl.yoy(fcf_pts, tol=15)
-    if fpair:
-        m["fcf_ttm_prev"] = fpair[1].val
-        src.add(t, "fcf_ttm_rok_wczesniej", fpair[1].val, xbrl_src(fpair[1]), xbrl_url(cik, fpair[1]),
-                fpair[1].end, cf_doc.retrieved_at)
-
-    cd = xbrl.cash_and_debt(slim)
-    if cd:
-        m["cash"], m["debt"], m["bs_date"] = cd["cash"], cd["debt"], cd["date"]
-        for name, parts in (("gotowka", cd["cash_parts"]), ("dlug", cd["debt_parts"])):
-            val = sum(p.val for p in parts)
-            desc = "; ".join(f"{p.tag} {p.form} złożony {p.filed}" for p in parts) or "brak tagów długu"
-            src.add(t, name, val, f"SEC XBRL ({desc})",
-                    edgar.archive_url(cik, parts[0].accn) if parts else cf_doc.url, cd["date"], cf_doc.retrieved_at)
-        if not cd["debt_found"]:
-            m.setdefault("verify", []).append("brak tagów długu w XBRL (przyjęto 0)")
-        net_debt = cd["debt"] - cd["cash"]
-        m["net_debt"] = net_debt
-        m["net_cash"] = net_debt < 0
-        eb = xbrl.ebitda_ttm(slim, fcf_end)
-        if eb is not None:
-            m["ebitda_ttm"] = eb.val
-            src.add(t, "ebitda_ttm", eb.val, xbrl_src(eb) + " EBIT + D&A, TTM", xbrl_url(cik, eb), eb.end,
-                    cf_doc.retrieved_at)
-            if eb.val > 0:
-                m["net_debt_ebitda"] = net_debt / eb.val
-                src.add(t, "dlug_netto/ebitda", m["net_debt_ebitda"], "wyliczone", "", cd["date"])
-
-    sh = xbrl.shares_outstanding(slim)
-    if sh:
-        m["shares"] = sh.val
-        src.add(t, "liczba_akcji", sh.val, f"SEC XBRL ({sh.tag}; {sh.form} złożony {sh.filed})",
-                edgar.archive_url(cik, sh.accn), sh.end, cf_doc.retrieved_at)
-
-    ni = xbrl.ttm_at(slim, xbrl.NET_INCOME_TAGS, fcf_end)
-    oo = xbrl.one_offs_ttm(slim, fcf_end)
-    m["one_off_detail"] = []
-    noncash = sum(v.val for _, v in oo["noncash"])
-    cash = sum(v.val for _, v in oo["cash"])
-    for tag, v in oo["noncash"] + oo["cash"]:
-        m["one_off_detail"].append(f"{tag}={v.val:,.0f}")
-        src.add(t, f"jednorazowka:{tag}", v.val, xbrl_src(v), xbrl_url(cik, v), v.end, cf_doc.retrieved_at)
-    if ni is not None:
-        m["net_income_ttm"] = ni.val
-        src.add(t, "zysk_netto_ttm", ni.val, xbrl_src(ni), xbrl_url(cik, ni), ni.end, cf_doc.retrieved_at)
-    if ni is not None and ni.val > 0 and (noncash + cash) > 0.25 * ni.val:
-        m["one_off"] = True
-    m["fcf_ex_one_off"] = fcf.val - cash
-    if cash > 0:
-        src.add(t, "fcf_bez_jednorazowek", m["fcf_ex_one_off"], "FCF TTM - gotówkowe pozycje jednorazowe", "", fcf_end)
-        if cash > 0.25 * abs(fcf.val):
-            m["one_off"] = True
-    return m, notes
-
-
-# ---------------------------------------------------------------- etap 4: EDGAR i rynek
-
-def edgar_checks(t: str, cik: int, rows: list[dict], sub_doc: Doc, f: Fetcher, src: Sources,
-                 m: dict, today: date) -> None:
-    dil = edgar.dilution_events(rows, cik, today)
-    try:
-        atm = edgar.efts_hits(f.get(edgar.efts_url('"at-the-market"', cik, ["8-K", "424B5", "S-3", "10-Q", "10-K"],
-                                                   today - timedelta(days=3 * 365), today)).data, cik)
-        if atm:
-            dil.append({"kind": "wzmianka o programie ATM", "form": atm[0]["form"], "date": atm[0]["date"],
-                        "url": atm[0]["url"]})
-    except FetchError as e:
-        m.setdefault("verify", []).append(f"EFTS ATM niedostępne: {e}")
-    m["dilution"] = bool(dil)
-    m["dilution_detail"] = dil
-    for d in dil:
-        src.add(t, "rozwodnienie", d["kind"], f"SEC EDGAR {d['form']}", d["url"], d["date"], sub_doc.retrieved_at)
-
-    dl = edgar.delisting_events(rows, cik, today)
-    m["delisting"] = bool(dl)
-    for d in dl:
-        src.add(t, "delisting_8k_3.01", d["form"], "SEC EDGAR 8-K pozycja 3.01", d["url"], d["date"],
-                sub_doc.retrieved_at, "3.01 bywa też przeniesieniem notowań: sprawdzić treść")
-        m.setdefault("verify", []).append(f"8-K 3.01 z {d['date']}")
-
-    lp = edgar.latest_periodic(rows)
-    if lp:
-        m["latest_report"] = f"{lp['form']} za {lp['reportDate']} złożony {lp['filingDate']}"
-        m["latest_report_url"] = edgar.archive_url(cik, lp["accessionNumber"], lp["primaryDocument"])
-        d0 = lp["filingDate"]
-        try:
-            gc = edgar.efts_hits(f.get(edgar.efts_url('"substantial doubt"', cik, ["10-Q", "10-K"], d0, d0)).data, cik)
-            gc2 = edgar.efts_hits(f.get(edgar.efts_url('"going concern"', cik, ["10-Q", "10-K"], d0, d0)).data, cik)
-            # Wymagamy obu fraz w tym samym ostatnim raporcie.
-            urls = {h["url"] for h in gc} & {h["url"] for h in gc2}
-            m["going_concern"] = bool(urls)
-            for u in urls:
-                src.add(t, "going_concern", "wzmianka", "SEC EDGAR full-text search", u, d0, "",
-                        "fraza może być boilerplate: sprawdzić treść")
-                m.setdefault("verify", []).append("going concern w ostatnim raporcie")
-        except FetchError as e:
-            m.setdefault("verify", []).append(f"EFTS going concern niedostępne: {e}")
-
-    legal = []
-    for q in ('"securities class action"', '"Wells notice"', '"Division of Enforcement"'):
-        try:
-            hits = edgar.efts_hits(f.get(edgar.efts_url(q, cik, ["10-Q", "10-K", "8-K"],
-                                                        today - timedelta(days=365), today)).data, cik)
-        except FetchError as e:
-            m.setdefault("verify", []).append(f"EFTS {q} niedostępne: {e}")
-            continue
-        for h in hits[:3]:
-            legal.append(f"{q} w {h['form']} {h['date']}")
-            src.add(t, "prawne", q, "SEC EDGAR full-text search", h["url"], h["date"], "",
-                    "sprawdzić, czy dotyczy spółki jako pozwanej")
-    m["legal"] = bool(legal)
-    m["legal_detail"] = legal
-
-    txs = []
-    for doc in edgar.form4_docs(rows, cik, today)[:MAX_FORM4_PER_COMPANY]:
-        try:
-            x = f.get(doc["url"], as_json=False)
-            for tx in edgar.parse_form4(x.data):
-                tx["url"] = doc["index_url"]
-                txs.append(tx)
-        except (FetchError, ValueError, SyntaxError) as e:  # ParseError z XML dziedziczy po SyntaxError
-            m.setdefault("verify", []).append(f"Form 4 {doc['index_url']}: {e}")
-    ins = edgar.insider_summary(txs, today)
-    m["insider_buy_usd"], m["insider_sell_usd"] = ins["buy_usd"], ins["sell_usd"]
-    for tx in ins["buys"] + ins["sells"]:
-        src.add(t, "insider_" + ("zakup" if tx["code"] == "P" else "sprzedaz"), tx["value"],
-                f"SEC Form 4: {tx['owner']} ({tx['role']}), {tx['shares']:,.0f} akcji po {tx['price']}"
-                + (", plan 10b5-1" if tx["plan_10b5_1"] else ""), tx["url"], tx["date"])
-    src.add(t, "insider_zakupy_90d", ins["buy_usd"], "suma Form 4 kod P", "", today)
-    src.add(t, "insider_sprzedaz_90d", ins["sell_usd"], "suma Form 4 kod S", "", today)
-
-
-def market_checks(t: str, sym: str, f: Fetcher, src: Sources, m: dict, today: date) -> None:
-    fv = {}
-    try:
-        fz = f.get(market.FINVIZ_QUOTE_URL.format(sym=market.yahoo_symbol(sym)), as_json=False)
-        fv = market.finviz_snapshot(fz.data)
-        if not fv:
-            m.setdefault("verify", []).append("Finviz: nie rozpoznano tabeli")
-        for label, key in (("Short Float", "short_float_finviz"), ("Short Ratio", "short_ratio_finviz"),
-                           ("Beta", "beta_finviz"), ("Shs Float", "float_finviz"), ("Market Cap", "cap_finviz")):
-            v = market.num(fv.get(label))
-            if v is not None:
-                if label == "Short Float":
-                    v /= 100
-                m[key] = v
-                src.add(t, key, v, f"Finviz ({label})", fz.url, fz.retrieved_at[:10], fz.retrieved_at,
-                        "Finviz nie podaje daty rozliczenia short interest" if label.startswith("Short") else "")
-    except FetchError as e:
-        m.setdefault("verify", []).append(f"Finviz niedostępny: {e}")
-
-    si = None
-    try:
-        sd = f.get(market.NASDAQ_SHORT_URL.format(sym=sym))
-        si = market.nasdaq_short_interest(sd.data)
-        if si:
-            for k in ("short_shares", "days_to_cover"):
-                if si[k] is not None:
-                    src.add(t, f"{k}_nasdaq", si[k], "Nasdaq short interest", sd.url, si["settlement_date"],
-                            sd.retrieved_at)
-    except FetchError as e:
-        m.setdefault("verify", []).append(f"Nasdaq short interest niedostępny: {e}")
-
-    # Short float: Finviz (short / free float). Fallback: short z Nasdaq / liczba akcji z SEC
-    # (zaniża wynik, bo free float < liczba akcji).
-    if m.get("short_float_finviz") is not None:
-        m["short_float"], m["short_float_src"] = m["short_float_finviz"], "Finviz"
-    elif si and si["short_shares"] and m.get("shares"):
-        m["short_float"] = si["short_shares"] / m["shares"]
-        m["short_float_src"] = "Nasdaq / akcje SEC (% akcji, nie free float)"
-        src.add(t, "short_float", m["short_float"], m["short_float_src"], "", si["settlement_date"])
-    if si and si["days_to_cover"] is not None:
-        m["days_to_cover"], m["dtc_src"] = si["days_to_cover"], f"Nasdaq, rozliczenie {si['settlement_date']}"
-    elif m.get("short_ratio_finviz") is not None:
-        m["days_to_cover"], m["dtc_src"] = m["short_ratio_finviz"], "Finviz Short Ratio"
-
-    # Najbliższe wyniki.
-    when, how = None, ""
-    try:
-        ed = f.get(market.NASDAQ_EARNINGS_URL.format(sym=sym))
-        d = market.nasdaq_earnings_date(ed.data)
-        if d and d >= today:
-            when, how = d, f"Nasdaq ({ed.url})"
-    except FetchError:
-        pass
-    if when is None:
-        d = market.finviz_earnings_date(fv.get("Earnings", ""), today)
-        if d:
-            when, how = d, "Finviz (Earnings)"
-    m["catalysts"] = m.get("catalysts", [])
-    if when and (when - today).days <= 183:
-        m["catalysts"].append(f"wyniki {when.isoformat()}")
-        src.add(t, "katalizator_wyniki", when.isoformat(), how, "", when)
-    if m.get("insider_buy_usd", 0) > 0:
-        m["catalysts"].append(f"zakupy insiderów {m['insider_buy_usd']:,.0f} USD / 90 dni")
-
-
-# ---------------------------------------------------------------- weryfikacja ręczna
-
-OVERRIDE_BOOL = {"one_off", "dilution", "legal", "going_concern", "delisting", "net_cash"}
-
-
-def load_overrides(path: Path) -> dict[str, list[dict]]:
-    out: dict[str, list[dict]] = {}
-    if not path.exists():
-        return out
-    with path.open(newline="", encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            if r.get("ticker"):
-                out.setdefault(norm_ticker(r["ticker"]), []).append(r)
-    return out
-
-
-def apply_overrides(t: str, m: dict, rows: list[dict], src: Sources, disc: list[dict]) -> None:
-    """Dane z raportu (wpisane po weryfikacji) wygrywają ze screenerem; różnice idą do discrepancies.csv."""
-    for r in rows:
-        key, raw = r["metric"].strip(), r["value"].strip()
-        if key == "catalyst":
-            m.setdefault("catalysts", []).append(raw)
-            src.add(t, "katalizator", raw, "weryfikacja ręczna", r.get("source_url", ""), r.get("as_of", ""),
-                    note=r.get("note", ""))
-            continue
-        val = raw.lower() in ("1", "true", "tak", "yes") if key in OVERRIDE_BOOL else market.num(raw)
-        old = m.get(key)
-        if old is not None and old != val:
-            differs = True
-            if isinstance(old, (int, float)) and isinstance(val, (int, float)) and not isinstance(old, bool):
-                differs = abs(old - val) > 0.02 * max(abs(old), abs(val), 1e-9)
-            if differs:
-                disc.append({"ticker": t, "metryka": key, "screener": old, "raport": val,
-                             "zrodlo_raportu": r.get("source_url", ""), "data": r.get("as_of", ""),
-                             "uwagi": r.get("note", "")})
-        m[key] = val
-        src.add(t, key, val, "weryfikacja ręczna (raport)", r.get("source_url", ""), r.get("as_of", ""),
-                note=r.get("note", ""))
-
-
-# ---------------------------------------------------------------- wynik
 
 def fmt(x, pct=False, money=False, nd=2):
     if x is None or (isinstance(x, float) and math.isnan(x)):
@@ -348,101 +56,339 @@ def fmt(x, pct=False, money=False, nd=2):
     return f"{x:.{nd}f}" if isinstance(x, float) else str(x)
 
 
-RESULT_FIELDS = [
-    "ticker", "spolka", "sektor", "branza", "gielda", "kapitalizacja_usd", "p_fcf", "wzrost_przychodow_rr",
-    "beta", "odleglosc_od_szczytu", "short_float", "days_to_cover", "wynik", "pkt_fundamenty", "pkt_technika",
-    "pkt_squeeze", "pkt_katalizator", "pkt_kary", "dyskwalifikacja", "katalizatory", "kary", "fcf_ttm_usd",
-    "fcf_ttm_rok_wczesniej_usd", "dlug_netto_ebitda", "gotowka_netto", "sredni_obrot_50d_usd", "kurs",
-    "szczyt_52t", "sma50", "data_kursu", "okres_fundamentow", "raport_zrodlowy", "zrodlo_short",
-    "do_weryfikacji",
-]
+def load_prices(f: Fetcher, symbol: str):
+    """Notowania dzienne: Yahoo, a gdy niedostępne - Stooq. Zwraca (DataFrame, Doc, nazwa źródła)."""
+    try:
+        doc = f.get(yahoo.CHART_URL.format(sym=yahoo.symbol(symbol)))
+        return from_yahoo_chart(doc.data)[0], doc, "Yahoo Finance chart API"
+    except (FetchError, ValueError, KeyError, TypeError) as yahoo_err:
+        try:
+            doc = f.get(market.STOOQ_URL.format(sym=yahoo.symbol(symbol).lower()), as_json=False)
+            return from_stooq_csv(doc.data), doc, "Stooq"
+        except (FetchError, ValueError, KeyError) as stooq_err:
+            raise FetchError(f"Yahoo: {yahoo_err}; Stooq: {stooq_err}") from stooq_err
 
 
-def result_row(t: str, base: dict, m: dict, s: dict) -> dict:
+# ---------------------------------------------------------------- etapy
+
+def price_stage(t: str, r: dict, f: Fetcher, bench, src: Sources) -> tuple[dict | None, str]:
+    try:
+        df, doc, label = load_prices(f, r["symbol"])
+    except FetchError as e:
+        return None, f"brak notowań: {e}"
+    if len(df) < 120:
+        return None, f"za krótka historia notowań ({len(df)} sesji)"
+    tech = technicals(df, bench)
+    m = {k: tech[k] for k in ("price", "high_52w", "dist_from_high", "sma50", "above_sma50", "sma50_turning_up",
+                              "higher_low", "breakout_volume", "beta", "invalidation", "invalidation_basis")}
+    m.update(avg_dollar_volume=tech["avg_dollar_volume_50d"], price_date=tech["date"], tech=tech,
+             price_url=doc.url, price_src=label, market_cap=r["market_cap"])
+    rows = [
+        ("kurs", m["price"], ""), ("szczyt_52t", m["high_52w"], f"maksimum z 252 sesji, {tech['high_52w_date']}"),
+        ("odleglosc_od_szczytu", m["dist_from_high"], ""), ("sma50", m["sma50"], ""),
+        ("sredni_obrot_50d_usd", m["avg_dollar_volume"], "średnia z 50 sesji: kurs x wolumen"),
+        ("beta", m["beta"], f"tygodniowe stopy zwrotu, {tech['beta_weeks']} tyg., benchmark SPY"),
+        ("poziom_uniewaznienia", m["invalidation"], m["invalidation_basis"]),
+    ]
+    if tech["breakout"]:
+        b = tech["breakout"]
+        rows.append(("wybicie_3m", b["close"],
+                     f"{b['date']}: zamknięcie > max 63 sesji ({b['level_3m']:.2f}), wolumen x{b['vol_ratio']:.1f}"))
+    for name, val, note in rows:
+        src.add(t, name, val, f"{label} (wyliczone)", doc.url, tech["date"], doc.retrieved_at, note)
+    return m, ""
+
+
+def fundamentals_stage(t: str, r: dict, m: dict, f: Fetcher, src: Sources, today: date) -> str:
+    try:
+        doc = f.get(yahoo.timeseries_url(r["symbol"], today))
+    except FetchError as e:
+        return f"brak danych finansowych: {e}"
+    fund = yahoo.fundamentals(yahoo.parse_timeseries(doc.data))
+    m.update(fund)
+    m["fund_url"] = doc.url
+    yl = "Yahoo Finance fundamentals-timeseries"
+    for key, label, end_key, typ in (
+            ("revenue_q", "przychody_kw", "revenue_q_end", "quarterlyTotalRevenue"),
+            ("revenue_q_prev", "przychody_kw_rok_wczesniej", "revenue_q_prev_end", "quarterlyTotalRevenue"),
+            ("fcf_ttm", "fcf_ttm", "fcf_end", "trailingFreeCashFlow"),
+            ("fcf_ttm_prev", "fcf_ttm_rok_wczesniej", "fcf_ttm_prev_end", "trailingFreeCashFlow"),
+            ("cash", "gotowka_i_inwestycje_kr", "bs_date", "quarterlyCashCashEquivalentsAndShortTermInvestments"),
+            ("debt_gross", "dlug_z_leasingiem", "bs_date", "quarterlyTotalDebt"),
+            ("leases", "leasing", "bs_date", "quarterlyCapitalLeaseObligations"),
+            ("ebitda_ttm", "ebitda_ttm", "ebitda_end", "trailingEBITDA"),
+            ("shares", "liczba_akcji", "shares_end", "quarterlyOrdinarySharesNumber"),
+            ("net_income_ttm", "zysk_netto_ttm", "ni_end", "trailingNetIncome"),
+            ("unusual_ttm", "pozycje_nadzwyczajne_ttm", "ni_end", "trailingTotalUnusualItems")):
+        if m.get(key) is not None:
+            src.add(t, label, m[key], f"{yl} ({typ})", doc.url, m.get(end_key, ""), doc.retrieved_at)
+    for key, label, end_key in (("rev_growth", "wzrost_przychodow_rr", "revenue_q_end"),
+                                ("net_debt_ebitda", "dlug_netto/ebitda", "bs_date"),
+                                ("shares_chg_6m", "zmiana_liczby_akcji_6m", "shares_end")):
+        if m.get(key) is not None:
+            src.add(t, label, m[key], "wyliczone z danych Yahoo powyżej", doc.url, m.get(end_key, ""), doc.retrieved_at)
+
+    if m.get("revenue_q") is None or m["revenue_q"] <= 0:
+        return "spółka przed przychodami lub brak przychodów"
+    if (today - m["revenue_q_end"]).days > 200:
+        return f"nieaktualne dane: ostatni kwartał kończy się {m['revenue_q_end']}"
+    if m.get("fcf_ttm") is None:
+        return "F1: brak FCF TTM"
+    if m["fcf_ttm"] <= 0:
+        return f"F1: FCF TTM {fmt(m['fcf_ttm'], money=True)} USD <= 0"
+    if m.get("rev_growth") is None or not m["rev_growth"] > 0:
+        return f"F2: przychody kw. r/r {fmt(m.get('rev_growth'), pct=True) or 'brak danych'}"
+
+    if m.get("shares"):
+        m["_nasdaq_cap"] = m["market_cap"]
+        m["market_cap"] = m["shares"] * m["price"]
+        m["cap_src"] = "liczba akcji (Yahoo, sprawozdanie) x kurs"
+        src.add(t, "kapitalizacja", m["market_cap"], m["cap_src"], doc.url, m["price_date"], doc.retrieved_at)
+    else:
+        m["cap_src"] = "Nasdaq screener"
+        src.add(t, "kapitalizacja", m["market_cap"], m["cap_src"], r["_url"], m["price_date"])
+    m["p_fcf"] = m["market_cap"] / m["fcf_ttm"]
+    src.add(t, "p_fcf", m["p_fcf"], "kapitalizacja / FCF TTM", "", m["price_date"])
+    if not CAP_MIN <= m["market_cap"] <= CAP_MAX:
+        return f"kapitalizacja {fmt(m['market_cap'] / 1e6, money=True)} mln USD poza 300 mln - 3 mld"
+    return ""
+
+
+FINVIZ_FIELDS = {"Short Float": "short_float_finviz", "Short Ratio": "short_ratio_finviz", "Beta": "beta_finviz",
+                 "P/FCF": "p_fcf_finviz", "Sales Q/Q": "rev_growth_finviz", "Market Cap": "cap_finviz",
+                 "Shs Float": "float_finviz", "Insider Trans": "insider_trans_finviz"}
+
+
+def details_stage(t: str, r: dict, m: dict, f: Fetcher, src: Sources, disc: list, today: date) -> None:
+    sym, verify = r["symbol"], m.setdefault("verify", [])
+    news: list[dict] = []
+    try:
+        fz = f.get(market.FINVIZ_QUOTE_URL.format(sym=market.finviz_symbol(sym)), as_json=False)
+        snap = market.finviz_snapshot(fz.data)
+        m["finviz_cat"] = market.finviz_categories(fz.data)
+        news = market.finviz_news(fz.data, today)
+        m["finviz_url"], m["earnings_finviz"], m["index_finviz"] = fz.url, snap.get("Earnings", ""), snap.get("Index", "")
+        m["_finviz_date"] = fz.retrieved_at[:10]
+        for label, key in FINVIZ_FIELDS.items():
+            raw = snap.get(label)
+            v = market.num(raw)
+            if v is None:
+                continue
+            if raw.strip().endswith("%"):
+                v /= 100
+            m[key] = v
+            src.add(t, key, v, f"Finviz ({label})", fz.url, fz.retrieved_at[:10], fz.retrieved_at,
+                    "Finviz nie podaje daty rozliczenia short interest" if label.startswith("Short") else "")
+        hi = (snap.get("52W High") or "").split()
+        if len(hi) == 2 and market.num(hi[1]) is not None:
+            m["dist_from_high_finviz"] = market.num(hi[1]) / 100
+            src.add(t, "odleglosc_od_szczytu_finviz", m["dist_from_high_finviz"], "Finviz (52W High)", fz.url,
+                    fz.retrieved_at[:10], fz.retrieved_at)
+        if not snap:
+            verify.append("Finviz: nie rozpoznano tabeli")
+    except FetchError as e:
+        verify.append(f"Finviz niedostępny: {e}")
+
+    si = None
+    try:
+        sd = f.get(market.NASDAQ_SHORT_URL.format(sym=market.nasdaq_symbol(sym)))
+        si = market.nasdaq_short_interest(sd.data)
+        if si:
+            for k, label in (("short_shares", "short_interest_akcje"), ("days_to_cover", "days_to_cover")):
+                if si[k] is not None:
+                    src.add(t, label, si[k], "Nasdaq short interest", sd.url, si["settlement_date"], sd.retrieved_at)
+    except FetchError as e:
+        verify.append(f"Nasdaq short interest niedostępny: {e}")
+    if m.get("short_float_finviz") is not None:
+        m["short_float"], m["short_float_src"] = m["short_float_finviz"], "Finviz"
+    elif si and si["short_shares"] and m.get("float_finviz"):
+        m["short_float"] = si["short_shares"] / m["float_finviz"]
+        m["short_float_src"] = f"Nasdaq short interest / Finviz float, {si['settlement_date']}"
+    if si and si["days_to_cover"] is not None:
+        m["days_to_cover"], m["dtc_src"] = si["days_to_cover"], f"Nasdaq, rozliczenie {si['settlement_date']}"
+        m["si_date"] = si["settlement_date"]
+    elif m.get("short_ratio_finviz") is not None:
+        m["days_to_cover"], m["dtc_src"] = m["short_ratio_finviz"], "Finviz Short Ratio"
+
+    when, how, how_url = None, "", ""
+    try:
+        ed = f.get(market.NASDAQ_EARNINGS_URL.format(sym=market.nasdaq_symbol(sym)))
+        got = market.nasdaq_earnings_date(ed.data)
+        if got and got[0] >= today:
+            when, how_url = got[0], ed.url
+            how = "Nasdaq" + (" (szacunek Zacks, data niepotwierdzona)" if got[1] else " (data ogłoszona)")
+    except FetchError:
+        pass
+    if when is None:
+        d = market.finviz_earnings_date(m.get("earnings_finviz", ""), today)
+        if d:
+            when, how, how_url = d, "Finviz (Earnings)", m.get("finviz_url", "")
+    m["catalysts"] = []
+    if when and (when - today).days <= 183:
+        est = "szacunek" in how
+        m["next_earnings"], m["next_earnings_est"], m["next_earnings_src"] = when, est, how
+        m["catalysts"].append(f"wyniki kwartalne {when.isoformat()}" + (" (data szacunkowa)" if est else ""))
+        src.add(t, "data_wynikow", when.isoformat(), how, how_url, when)
+
+    filings: list[dict] = []
+    try:
+        filings = market.nasdaq_filings(f.get(market.NASDAQ_FILINGS_URL.format(sym=market.nasdaq_symbol(sym))).data)
+    except FetchError as e:
+        verify.append(f"lista zgłoszeń Nasdaq niedostępna: {e}")
+    m["filings_from"] = min((x["filed"] for x in filings), default=None)
+    dil = checks.dilution(filings, m, news, today)
+    m["dilution"], m["dilution_detail"] = bool(dil), dil
+    m["atm"] = checks.has_atm(dil)
+    for d in dil:
+        src.add(t, "rozwodnienie", d["kind"], d["source"], d["url"], d["date"])
+
+    flags = checks.red_flags(news, today)
+    m["news_from"] = min((n["date"] for n in news), default=None)
+    m["delisting"], m["going_concern"] = bool(flags["delisting"]), bool(flags["going_concern"])
+    m["legal"] = bool(flags["legal"])
+    m["legal_detail"] = [f"{n['date']}: {n['title']}" for n in flags["legal"]]
+    for key in ("delisting", "going_concern", "legal"):
+        for n in flags[key][:3]:
+            src.add(t, key, n["title"], f"Finviz news ({n['source']})", n["url"], n["date"])
+    for n in flags["verify"][:2]:
+        verify.append(f"news {n['date']}: {n['title'][:90]}")
+
+    try:
+        url = market.NASDAQ_INSIDER_URL.format(sym=market.nasdaq_symbol(sym))
+        ins = checks.insiders(market.nasdaq_insider_trades(f.get(url).data), today)
+        m["insider_buy_usd"], m["insider_sell_usd"] = ins["buy_usd"], ins["sell_usd"]
+        for tr in ins["buys"] + ins["sells"]:
+            src.add(t, "insider_" + tr["type"].lower().replace(" ", "_"), tr["value"],
+                    f"Nasdaq insider trades: {tr['insider']} ({tr['relation']}), {tr['shares']:,.0f} akcji po {tr['price']}",
+                    url, tr["date"])
+        src.add(t, "insider_zakupy_90d", ins["buy_usd"], "Nasdaq insider trades, suma Buy", url, today)
+        src.add(t, "insider_sprzedaz_90d", ins["sell_usd"], "Nasdaq insider trades, suma Sell", url, today)
+        if ins["buy_usd"] > 0:
+            m["catalysts"].append(f"zakupy insiderów {ins['buy_usd']:,.0f} USD w 90 dni")
+    except FetchError as e:
+        verify.append(f"insiderzy Nasdaq niedostępni: {e}")
+
+    # Porównanie z Finviz (screener). Rozbieżności zapisujemy; w punktacji liczą się dane ze sprawozdań.
+    def cmp(metric, ours, theirs, tol, note=""):
+        if ours is not None and theirs is not None and abs(ours - theirs) > tol(ours):
+            disc.append({"ticker": t, "metryka": metric, "screener_finviz": round(theirs, 4),
+                         "sprawozdanie_lub_wyliczenie": round(ours, 4), "uwagi": note})
+    cmp("p_fcf", m.get("p_fcf"), m.get("p_fcf_finviz"), lambda a: 0.2 * abs(a), "Finviz liczy na inny dzień/definicję")
+    cmp("wzrost_przychodow_rr", m.get("rev_growth"), m.get("rev_growth_finviz"), lambda a: 0.05)
+    cmp("kapitalizacja", m.get("market_cap"), m.get("cap_finviz"), lambda a: 0.1 * abs(a))
+    cmp("kapitalizacja", m.get("market_cap"), m.get("_nasdaq_cap"), lambda a: 0.1 * abs(a), "porównanie z Nasdaq screener")
+    cmp("beta", m.get("beta"), m.get("beta_finviz"), lambda a: 0.3, "własna: 2 lata tygodniowo vs SPY")
+
+    cat = m.get("finviz_cat") or {}
+    ind = cat.get("industry", "")
+    if ind == "Shell Companies":
+        m["exclude"] = "SPAC (Finviz: Shell Companies)"
+    elif ind.startswith("REIT"):
+        m["exclude"] = f"REIT (Finviz: {ind})"
+    elif cat.get("country") in ("China", "Hong Kong", "Macau"):
+        m["exclude"] = f"spółka z {cat['country']} (Finviz)"
+
+
+# ---------------------------------------------------------------- weryfikacja ręczna
+
+OVERRIDE_BOOL = {"one_off", "dilution", "legal", "going_concern", "delisting", "net_cash", "atm"}
+
+
+def load_overrides(path: Path) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as fh:
+            for r in csv.DictReader(fh):
+                if r.get("ticker"):
+                    out.setdefault(norm_ticker(r["ticker"]), []).append(r)
+    return out
+
+
+def apply_overrides(t: str, m: dict, rows: list[dict], src: Sources, disc: list[dict]) -> None:
+    """Weryfikacja ręczna wygrywa z danymi automatycznymi; różnice trafiają do discrepancies.csv."""
+    for r in rows:
+        key, raw = r["metric"].strip(), r["value"].strip()
+        note, url, as_of = r.get("note", ""), r.get("source_url", ""), r.get("as_of", "")
+        if key == "catalyst":
+            m.setdefault("catalysts", []).append(raw)
+            src.add(t, "katalizator", raw, "weryfikacja ręczna", url, as_of, note=note)
+            continue
+        if key == "exclude":
+            m["exclude"] = raw
+            src.add(t, "wykluczenie", raw, "weryfikacja ręczna", url, as_of, note=note)
+            continue
+        val = raw.lower() in ("1", "true", "tak", "yes") if key in OVERRIDE_BOOL else market.num(raw)
+        old = m.get(key)
+        if old is not None and old != val:
+            differs = True
+            if isinstance(old, (int, float)) and isinstance(val, (int, float)) and not isinstance(old, bool):
+                differs = abs(old - val) > 0.02 * max(abs(old), abs(val), 1e-9)
+            if differs:
+                disc.append({"ticker": t, "metryka": key, "screener_finviz": old, "sprawozdanie_lub_wyliczenie": val,
+                             "uwagi": f"weryfikacja ręczna: {note} {url}".strip()})
+        m[key] = val
+        if key == "atm" and val:
+            m["dilution"] = True
+            m.setdefault("dilution_detail", []).append({"kind": "program ATM (weryfikacja)", "date": as_of,
+                                                        "source": note, "url": url})
+        src.add(t, key, val, "weryfikacja ręczna", url, as_of, note=note)
+
+
+def self_check(m: dict) -> list[str]:
+    """Kontrola końcowa TOP 10: nie blisko szczytu, beta > 1,2, brak aktywnego ATM."""
+    out = []
+    for key, label in (("dist_from_high", "Yahoo"), ("dist_from_high_finviz", "Finviz")):
+        v = m.get(key)
+        if v is not None and v > -0.25:
+            out.append(f"za blisko szczytu ({label}: {v * 100:.1f}%)")
+    for key, label in (("beta", "własna"), ("beta_finviz", "Finviz")):
+        v = m.get(key)
+        if v is not None and v <= 1.2:
+            out.append(f"beta {label} {v:.2f} <= 1,2")
+    if m.get("atm"):
+        out.append("aktywny program ATM")
+    return out
+
+
+# ---------------------------------------------------------------- wynik
+
+RESULT_FIELDS = ["ticker", "spolka", "sektor", "kapitalizacja_usd", "p_fcf", "wzrost_przychodow_rr", "beta",
+                 "odleglosc_od_szczytu", "short_float", "days_to_cover", "pkt_fundamenty", "pkt_technika",
+                 "pkt_squeeze", "pkt_katalizator", "kary", "wynik", "opis_kar", "dyskwalifikacja", "top10",
+                 "data_kursu", "okres_sprawozdania", "zrodla"]
+
+
+def result_row(t, base, m, s, in_top) -> dict:
+    sector = (m.get("finviz_cat") or {}).get("sector") or base["sector"]
     return {
-        "ticker": t, "spolka": base["name"], "sektor": base["sector"], "branza": base["industry"],
-        "gielda": base["exchange"], "kapitalizacja_usd": fmt(m.get("market_cap"), money=True),
-        "p_fcf": fmt(m.get("p_fcf"), nd=1), "wzrost_przychodow_rr": fmt(m.get("rev_growth"), pct=True),
-        "beta": fmt(m.get("beta")), "odleglosc_od_szczytu": fmt(m.get("dist_from_high"), pct=True),
-        "short_float": fmt(m.get("short_float"), pct=True), "days_to_cover": fmt(m.get("days_to_cover"), nd=1),
-        "wynik": s["wynik"], "pkt_fundamenty": s["pkt_fundamenty"], "pkt_technika": s["pkt_technika"],
-        "pkt_squeeze": s["pkt_squeeze"], "pkt_katalizator": s["pkt_katalizator"], "pkt_kary": s["pkt_kary"],
-        "dyskwalifikacja": s["dyskwalifikacja"], "katalizatory": " | ".join(s["katalizatory"]),
-        "kary": " | ".join(f"{n} ({p})" for n, p in s["kary"]),
-        "fcf_ttm_usd": fmt(m.get("fcf_ttm"), money=True), "fcf_ttm_rok_wczesniej_usd": fmt(m.get("fcf_ttm_prev"), money=True),
-        "dlug_netto_ebitda": fmt(m.get("net_debt_ebitda")), "gotowka_netto": "tak" if m.get("net_cash") else "nie",
-        "sredni_obrot_50d_usd": fmt(m.get("avg_dollar_volume"), money=True), "kurs": fmt(m.get("price")),
-        "szczyt_52t": fmt(m.get("high_52w")), "sma50": fmt(m.get("sma50")), "data_kursu": m.get("price_date", ""),
-        "okres_fundamentow": f"kw. do {m.get('revenue_q_end', '')}; FCF TTM do {m.get('fcf_end', '')}",
-        "raport_zrodlowy": m.get("latest_report_url", ""),
-        "zrodlo_short": f"{m.get('short_float_src', '')}; DTC: {m.get('dtc_src', '')}",
-        "do_weryfikacji": " | ".join(m.get("verify", [])),
+        "ticker": t, "spolka": base["name"], "sektor": sector,
+        "kapitalizacja_usd": fmt(m.get("market_cap"), money=True), "p_fcf": fmt(m.get("p_fcf"), nd=1),
+        "wzrost_przychodow_rr": fmt(m.get("rev_growth"), pct=True), "beta": fmt(m.get("beta")),
+        "odleglosc_od_szczytu": fmt(m.get("dist_from_high"), pct=True), "short_float": fmt(m.get("short_float"), pct=True),
+        "days_to_cover": fmt(m.get("days_to_cover"), nd=1), "pkt_fundamenty": s["pkt_fundamenty"],
+        "pkt_technika": s["pkt_technika"], "pkt_squeeze": s["pkt_squeeze"], "pkt_katalizator": s["pkt_katalizator"],
+        "kary": s["pkt_kary"], "wynik": s["wynik"], "opis_kar": " | ".join(f"{n} ({p})" for n, p in s["kary"]),
+        "dyskwalifikacja": s["dyskwalifikacja"], "top10": "tak" if in_top else "",
+        "data_kursu": m.get("price_date", ""),
+        "okres_sprawozdania": f"przychody kw. do {iso(m.get('revenue_q_end'))}; FCF TTM do {iso(m.get('fcf_end'))}",
+        "zrodla": f"sources.csv (ticker={t}); kurs: {m.get('price_src', '')}; finanse: Yahoo; short: "
+                  f"{m.get('short_float_src', '')} / {m.get('dtc_src', '')}",
     }
 
 
-def write_csv(path: Path, rows: list[dict], fields: list[str] | None = None) -> None:
-    fields = fields or (list(rows[0].keys()) if rows else ["ticker"])
+def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
 
 
-def write_report(path: Path, today: date, ranked: list[tuple], funnel: Counter, excluded: list[dict],
-                 disc: list[dict], src: Sources, top: int) -> None:
-    by_t: dict[str, list[dict]] = {}
-    for r in src.rows:
-        by_t.setdefault(r["ticker"], []).append(r)
-    L = [f"# Screening small-cap USA ({today.isoformat()})", "",
-         "Dane: SEC EDGAR (XBRL companyfacts, submissions, full-text search, Form 4), Yahoo Finance (kursy), "
-         "Nasdaq (uniwersum, short interest, daty wyników), Finviz (short float). Każda liczba ze źródłem i datą: "
-         "`sources.csv`. Spółki odrzucone z powodem: `excluded.csv`.", "",
-         "## Lejek", ""]
-    for stage, n in funnel.items():
-        L.append(f"- {stage}: {n}")
-    reasons = Counter(e["powod"].split(":")[0] for e in excluded)
-    L += ["", "Najczęstsze powody odrzucenia:", ""]
-    L += [f"- {r}: {n}" for r, n in reasons.most_common(12)]
-    L += ["", f"## Top {top}", "",
-          "| # | Ticker | Spółka | Wynik | F | T | S | K | Kary | Kap. (mln USD) | P/FCF | Przych. r/r | Beta | Od szczytu | Short float | DTC |",
-          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-    for i, (t, base, m, s) in enumerate(ranked[:top], 1):
-        L.append(f"| {i} | {t} | {base['name']} | **{s['wynik']}** | {s['pkt_fundamenty']} | {s['pkt_technika']} | "
-                 f"{s['pkt_squeeze']} | {s['pkt_katalizator']} | {s['pkt_kary']} | {fmt((m.get('market_cap') or 0) / 1e6, money=True)} | "
-                 f"{fmt(m.get('p_fcf'), nd=1)} | {fmt(m.get('rev_growth'), pct=True)} | {fmt(m.get('beta'))} | "
-                 f"{fmt(m.get('dist_from_high'), pct=True)} | {fmt(m.get('short_float'), pct=True)} | {fmt(m.get('days_to_cover'), nd=1)} |")
-    for i, (t, base, m, s) in enumerate(ranked[:top], 1):
-        L += ["", f"### {i}. {t} — {base['name']} ({base['sector']})", ""]
-        for group in ("fundamenty", "technika", "squeeze"):
-            L.append(f"- {group}: " + ", ".join(f"{k} {'✔' if v else '✘'}" for k, v in s[group].items()))
-        L.append(f"- katalizatory: {', '.join(s['katalizatory']) or 'brak'}")
-        L.append(f"- kary: {', '.join(f'{n} ({p})' for n, p in s['kary']) or 'brak'}")
-        if s["dyskwalifikacja"]:
-            L.append(f"- **dyskwalifikacja: {s['dyskwalifikacja']}**")
-        if m.get("verify"):
-            L.append(f"- do weryfikacji: {'; '.join(m['verify'])}")
-        L.append(f"- ostatni raport: [{m.get('latest_report', '')}]({m.get('latest_report_url', '')})")
-        L += ["", "| Metryka | Wartość | Źródło | Data danych |", "|---|---|---|---|"]
-        for r in by_t.get(t, []):
-            link = f"[{r['zrodlo']}]({r['url']})" if r["url"] else r["zrodlo"]
-            v = r["wartosc"]
-            val = (f"{v:,.0f}" if abs(v) >= 1000 else f"{v:.4g}") if isinstance(v, float) else v
-            L.append(f"| {r['metryka']} | {val} | {link} | {r['data_danych']} |")
-    if disc:
-        L += ["", "## Rozbieżności screener vs raport", "", "| Ticker | Metryka | Screener | Raport | Źródło |",
-              "|---|---|---|---|---|"]
-        L += [f"| {d['ticker']} | {d['metryka']} | {d['screener']} | {d['raport']} | {d['zrodlo_raportu']} |" for d in disc]
-    path.write_text("\n".join(L) + "\n", encoding="utf-8")
-
-
-# ---------------------------------------------------------------- główna pętla
-
 def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
     ap = argparse.ArgumentParser(description="Screening small-capów USA z potencjałem wzrostu (1-3 mies.)")
     ap.add_argument("--out", default="output")
     ap.add_argument("--cache", default="data/cache")
     ap.add_argument("--overrides", default="overrides.csv")
-    ap.add_argument("--top", type=int, default=15)
+    ap.add_argument("--notes", default="analysis/notes.json", help="teza/ryzyko/katalizator dla TOP 10")
     ap.add_argument("--limit", type=int, default=0, help="tylko N pierwszych spółek (test)")
     ap.add_argument("--tickers", default="", help="lista tickerów po przecinku zamiast pełnego uniwersum")
     ap.add_argument("--offline", action="store_true", help="tylko dane z cache")
@@ -453,192 +399,117 @@ def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
     today = date.fromisoformat(args.as_of) if args.as_of else date.today()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    f = fetcher or Fetcher(Path(args.cache), os.environ.get("SEC_USER_AGENT"), args.max_age_h, args.offline)
-    src = Sources()
-    excluded: list[dict] = []
+    f = fetcher or Fetcher(Path(args.cache), None, args.max_age_h, args.offline)
+    src, disc, excluded, late = Sources(), [], [], []
     funnel: Counter = Counter()
     overrides = load_overrides(Path(args.overrides))
-    disc: list[dict] = []
 
     def drop(t, name, stage, reason, url=""):
         excluded.append({"ticker": t, "spolka": name, "etap": stage, "powod": reason, "zrodlo": url})
 
-    # 1. Uniwersum
-    rows = []
+    # 1. Uniwersum (Nasdaq screener)
+    rows, universe_date = [], ""
     for ex, label in market.EXCHANGES.items():
         doc = f.get(market.NASDAQ_SCREENER_URL.format(ex=ex))
+        universe_date = doc.retrieved_at
         for r in market.screener_rows(doc.data, label):
-            r["_doc"] = doc
+            r["_url"] = doc.url
             rows.append(r)
-    sec_t = f.get(edgar.TICKERS_URL)
-    fields = sec_t.data["fields"]
-    cik_by = {}
-    for rec in sec_t.data["data"]:
-        d = dict(zip(fields, rec))
-        cik_by.setdefault(norm_ticker(d["ticker"]), int(d["cik"]))
     only = {norm_ticker(x) for x in args.tickers.split(",") if x.strip()}
-    funnel["notowane na NYSE/Nasdaq/NYSE American (Nasdaq screener)"] = len(rows)
-
+    funnel["1. spółki notowane na NYSE, Nasdaq, NYSE American (Nasdaq screener)"] = len(rows)
     stage1 = []
     for r in rows:
         t = norm_ticker(r["symbol"])
         if only and t not in only:
             continue
-        reason = market.universe_exclusion(r)
         cap = r["market_cap"]
-        if not reason and (not cap or not CAP_MIN * (1 - CAP_BUFFER) <= cap <= CAP_MAX * (1 + CAP_BUFFER)):
-            reason = "kapitalizacja (Nasdaq screener) poza zakresem"
-        if not reason and t not in cik_by:
-            reason = "brak CIK w SEC"
-        if reason:
-            if cap and CAP_MIN * (1 - CAP_BUFFER) <= cap <= CAP_MAX * (1 + CAP_BUFFER):
-                drop(t, r["name"], "uniwersum", reason, r["_doc"].url)
+        if not cap or not CAP_MIN * (1 - CAP_BUFFER) <= cap <= CAP_MAX * (1 + CAP_BUFFER):
             continue
-        r["ticker"], r["cik"] = t, cik_by[t]
+        reason = market.universe_exclusion(r)
+        if reason:
+            drop(t, r["name"], "uniwersum", reason, r["_url"])
+            continue
+        r["ticker"] = t
         stage1.append(r)
     if args.limit:
         stage1 = stage1[:args.limit]
-    funnel["w przedziale kapitalizacji (z marginesem), akcje zwykłe, bez SPAC/REIT/Chin"] = len(stage1)
+    funnel["2. kapitalizacja ok. 300 mln - 3 mld USD, akcje zwykłe, bez SPAC/REIT/Chin"] = len(stage1)
     log(f"uniwersum: {len(stage1)} spółek")
 
-    # 2. Fundamenty z SEC
+    # 2. Kurs i technika (Yahoo)
+    bench, _, _ = load_prices(f, "SPY")
     stage2 = []
     for i, r in enumerate(stage1, 1):
-        t, cik = r["ticker"], r["cik"]
-        if i % 50 == 0:
-            log(f"  SEC {i}/{len(stage1)}")
-        try:
-            sub = f.get(edgar.SUBMISSIONS_URL.format(cik=cik))
-        except FetchError as e:
-            drop(t, r["name"], "SEC", f"błąd pobrania submissions: {e}")
+        if i % 100 == 0:
+            log(f"  notowania {i}/{len(stage1)}, przeszło {len(stage2)}")
+        t = r["ticker"]
+        m, err = price_stage(t, r, f, bench, src)
+        if m is None:
+            drop(t, r["name"], "kurs", err)
             continue
-        prof = edgar.company_profile(sub.data)
-        if prof["sic"] in edgar.SPAC_SIC:
-            drop(t, r["name"], "SEC", "SPAC (SIC 6770)", sub.url)
+        fails = hard_filter_failures({**m, "fcf_ttm": 1, "rev_growth": 1})  # finanse sprawdzamy w etapie 3
+        if fails:
+            drop(t, r["name"], "kurs/technika", "; ".join(fails), m["price_url"])
             continue
-        if prof["sic"] in edgar.REIT_SIC:
-            drop(t, r["name"], "SEC", "REIT (SIC 6798)", sub.url)
-            continue
-        if prof["country_code"] in edgar.CHINA_CODES:
-            drop(t, r["name"], "SEC", f"siedziba: {prof['country_desc']}", sub.url)
-            continue
-        filings = edgar.filings_table(sub.data)
-        if edgar.latest_periodic(filings) is None:
-            drop(t, r["name"], "SEC", "brak 10-Q/10-K (emitent 20-F/40-F: brak kwartalnych danych XBRL)", sub.url)
-            continue
-        try:
-            cf = f.get(edgar.COMPANYFACTS_URL.format(cik=cik), transform=xbrl.slim_companyfacts)
-        except NotFound:
-            drop(t, r["name"], "SEC", "brak danych XBRL", sub.url)
-            continue
-        except FetchError as e:
-            drop(t, r["name"], "SEC", f"błąd pobrania companyfacts: {e}")
-            continue
-        m, notes = fundamentals(t, cik, cf.data, cf, src, today)
-        if notes:
-            drop(t, r["name"], "fundamenty", "; ".join(notes), cf.url)
-            continue
-        if not m.get("fcf_ttm", 0) > 0:
-            drop(t, r["name"], "fundamenty", f"F1: FCF TTM {fmt(m.get('fcf_ttm'), money=True)} <= 0", cf.url)
-            continue
-        if m["fcf_ex_one_off"] <= 0:
-            drop(t, r["name"], "fundamenty", "F1: FCF dodatni tylko dzięki pozycjom jednorazowym", cf.url)
-            continue
-        if not m.get("rev_growth", 0) > 0:
-            drop(t, r["name"], "fundamenty", f"F2: przychody kw. r/r {fmt(m.get('rev_growth'), pct=True)}", cf.url)
-            continue
-        r["sub"], r["filings"], r["m"] = sub, filings, m
+        r["m"] = m
         stage2.append(r)
-    funnel["F1 (FCF TTM > 0) i F2 (przychody kw. r/r rosną), dane SEC"] = len(stage2)
-    log(f"po fundamentach: {len(stage2)}")
+    funnel["3. obrót > 2 mln USD, F3 beta > 1,2, F4 >= 25% pod szczytem, F5 kurs nad SMA50"] = len(stage2)
+    log(f"po technice: {len(stage2)}")
 
-    # 3. Kurs i technika
-    bench_df, _, _ = load_prices(f, "SPY")
+    # 3. Dane finansowe (Yahoo)
     stage3 = []
     for r in stage2:
         t, m = r["ticker"], r["m"]
-        try:
-            df, yd, price_src = load_prices(f, r["symbol"])
-        except (FetchError, ValueError, KeyError) as e:
-            drop(t, r["name"], "kurs", f"brak notowań: {e}")
-            continue
-        if len(df) < 120:
-            drop(t, r["name"], "kurs", f"za krótka historia notowań ({len(df)} sesji)", yd.url)
-            continue
-        tech = technicals(df, bench_df)
-        m.update({k: tech[k] for k in ("price", "high_52w", "dist_from_high", "sma50", "above_sma50",
-                                        "sma50_turning_up", "higher_low", "breakout_volume", "beta")})
-        m["avg_dollar_volume"], m["price_date"], m["tech"] = tech["avg_dollar_volume_50d"], tech["date"], tech
-        for key, label in (("price", "kurs"), ("high_52w", "szczyt_52t"), ("sma50", "sma50"),
-                           ("dist_from_high", "odleglosc_od_szczytu"), ("avg_dollar_volume", "sredni_obrot_50d"),
-                           ("beta", "beta")):
-            note = f"52 tyg. szczyt z {tech['high_52w_date']}" if key == "high_52w" else ""
-            if key == "beta":
-                note = f"tygodniowe stopy zwrotu, {tech['beta_weeks']} tyg., benchmark SPY"
-            src.add(t, label, m[key], f"{price_src} (wyliczone)", yd.url, tech["date"], yd.retrieved_at, note)
-        if tech["breakout"]:
-            b = tech["breakout"]
-            src.add(t, "wybicie_3m", b["close"], f"zamknięcie > max 63 sesji ({b['level_3m']:.2f}), wolumen x{b['vol_ratio']:.1f}",
-                    yd.url, b["date"], yd.retrieved_at)
-        nasdaq_cap = r["market_cap"]
-        if m.get("shares"):
-            m["market_cap"] = m["shares"] * m["price"]
-            src.add(t, "kapitalizacja", m["market_cap"], "liczba akcji (SEC) x kurs (Yahoo)", "", tech["date"])
-            if nasdaq_cap and abs(m["market_cap"] / nasdaq_cap - 1) > 0.10:
-                disc.append({"ticker": t, "metryka": "kapitalizacja", "screener": nasdaq_cap, "raport": m["market_cap"],
-                             "zrodlo_raportu": "akcje z raportu SEC x kurs", "data": tech["date"],
-                             "uwagi": "Nasdaq screener vs SEC"})
-        else:
-            m["market_cap"] = nasdaq_cap
-            src.add(t, "kapitalizacja", nasdaq_cap, "Nasdaq screener", r["_doc"].url, r["_doc"].retrieved_at[:10])
-        m["p_fcf"] = m["market_cap"] / m["fcf_ttm"]
-        src.add(t, "p_fcf", m["p_fcf"], "kapitalizacja / FCF TTM", "", tech["date"])
-        fails = [x for x in hard_filter_failures(m) if not x.startswith("F6")]
-        if fails:
-            drop(t, r["name"], "kurs/technika", "; ".join(fails), yd.url)
+        err = fundamentals_stage(t, r, m, f, src, today)
+        if err:
+            drop(t, r["name"], "finanse", err, m.get("fund_url", ""))
             continue
         stage3.append(r)
-    funnel["kapitalizacja 300 mln-3 mld, obrót > 2 mln, F3 beta > 1,2, F4 >= 25% pod szczytem, F5 nad SMA50"] = len(stage3)
-    log(f"po technice: {len(stage3)}")
+    funnel["4. F1 FCF TTM > 0, F2 przychody kw. r/r rosną, kapitalizacja 300 mln - 3 mld (akcje x kurs)"] = len(stage3)
+    log(f"po finansach: {len(stage3)}")
 
-    # 4. EDGAR (rozwodnienie, delisting, going concern, insiderzy, sprawy prawne) i short interest
+    # 4. Short interest, katalizatory, rozwodnienie, ostrzeżenia, insiderzy (Finviz, Nasdaq)
     scored = []
     for r in stage3:
         t, m = r["ticker"], r["m"]
         log(f"  szczegóły: {t}")
-        filings = r["filings"]
-        oldest = min((x["filingDate"] for x in filings), default=today)
-        if oldest > today - timedelta(days=3 * 365):
-            for page in r["sub"].data.get("filings", {}).get("files", []):
-                if page.get("filingTo", "") >= (today - timedelta(days=3 * 365)).isoformat():
-                    try:
-                        filings += edgar.filings_table(f.get(edgar.SUBMISSIONS_PAGE_URL.format(name=page["name"])).data)
-                    except FetchError as e:
-                        m.setdefault("verify", []).append(f"starsze zgłoszenia niedostępne: {e}")
-        edgar_checks(t, r["cik"], filings, r["sub"], f, src, m, today)
-        market_checks(t, r["symbol"], f, src, m, today)
-        if m.get("beta_finviz") is not None and abs(m["beta_finviz"] - m["beta"]) > 0.3:
-            disc.append({"ticker": t, "metryka": "beta", "screener": m["beta_finviz"], "raport": round(m["beta"], 2),
-                         "zrodlo_raportu": "wyliczona z notowań (SPY, tygodniowo, 2 lata)", "data": m["price_date"],
-                         "uwagi": "Finviz liczy betę z innego okna"})
+        details_stage(t, r, m, f, src, disc, today)
         apply_overrides(t, m, overrides.get(t, []), src, disc)
         fails = hard_filter_failures(m)
         if fails:
-            drop(t, r["name"], "EDGAR", "; ".join(fails), m.get("latest_report_url", ""))
+            drop(t, r["name"], "kontrola końcowa", "; ".join(fails), m.get("finviz_url", ""))
+            late.append({"ticker": t, "spolka": r["name"], "powod": "; ".join(fails)})
             continue
         scored.append((t, r, m, score(m)))
-    funnel["F6 (bez going concern i delistingu)"] = len(scored)
+    funnel["5. F6 (delisting, going concern), kontrola krzyżowa z Finviz, weryfikacja ręczna"] = len(scored)
 
-    ranked = sorted(scored, key=lambda x: (x[3]["dyskwalifikacja"] == "", x[3]["wynik"],
-                                           x[3]["pkt_fundamenty"]), reverse=True)
-    results = [result_row(t, r, m, s) for t, r, m, s in ranked]
-    write_csv(out / "results.csv", results, RESULT_FIELDS)
-    write_csv(out / "sources.csv", src.rows)
+    ranked = sorted(scored, key=lambda x: (x[3]["wynik"], x[3]["pkt_fundamenty"], -(x[2].get("p_fcf") or 99)),
+                    reverse=True)
+    top = []
+    for t, r, m, s in ranked:
+        if len(top) >= TOP_N:
+            break
+        reasons = self_check(m) + ([s["dyskwalifikacja"]] if s["dyskwalifikacja"] else [])
+        if reasons:
+            late.append({"ticker": t, "spolka": r["name"], "powod": "; ".join(reasons), "wynik": s["wynik"]})
+            continue
+        top.append((t, r, m, s))
+    top_set = {x[0] for x in top}
+    squeeze = [x for x in ranked if not x[3]["dyskwalifikacja"] and not x[2].get("dilution") and x[3]["pkt_squeeze"] > 0]
+    squeeze.sort(key=lambda x: (x[3]["pkt_squeeze"], x[2].get("short_float") or 0, x[2].get("days_to_cover") or 0),
+                 reverse=True)
+
+    write_csv(out / "results.csv", [result_row(t, r, m, s, t in top_set) for t, r, m, s in ranked], RESULT_FIELDS)
+    write_csv(out / "sources.csv", src.rows, ["ticker", "metryka", "wartosc", "zrodlo", "url", "data_danych", "pobrano", "uwagi"])
     write_csv(out / "excluded.csv", excluded, ["ticker", "spolka", "etap", "powod", "zrodlo"])
-    write_csv(out / "discrepancies.csv", disc, ["ticker", "metryka", "screener", "raport", "zrodlo_raportu", "data", "uwagi"])
-    write_report(out / "raport.md", today, [(t, r, m, s) for t, r, m, s in ranked], funnel, excluded, disc, src, args.top)
-    (out / "funnel.json").write_text(json.dumps(funnel, ensure_ascii=False, indent=1))
-    log(f"gotowe: {len(results)} spółek w {out / 'results.csv'}")
+    write_csv(out / "discrepancies.csv", disc, ["ticker", "metryka", "screener_finviz", "sprawozdanie_lub_wyliczenie", "uwagi"])
+    from .report import write_report
+
+    notes = json.loads(Path(args.notes).read_text(encoding="utf-8")) if Path(args.notes).exists() else {}
+    write_report(out / "raport.md", today=today, universe_date=universe_date, top=top, squeeze=squeeze[:SQUEEZE_N],
+                 late=late, funnel=funnel, excluded=excluded, disc=disc, src=src, notes=notes, n_scored=len(ranked))
+    (out / "funnel.json").write_text(json.dumps(funnel, ensure_ascii=False, indent=1), encoding="utf-8")
+    log(f"gotowe: {len(ranked)} spółek po filtrach, TOP {len(top)} w {out / 'raport.md'}")
     return 0
 
 
