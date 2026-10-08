@@ -327,10 +327,10 @@ def apply_overrides(t: str, m: dict, rows: list[dict], src: Sources, disc: list[
                 disc.append({"ticker": t, "metryka": key, "screener_finviz": old, "sprawozdanie_lub_wyliczenie": val,
                              "uwagi": f"weryfikacja ręczna: {note} {url}".strip()})
         m[key] = val
-        if key == "atm" and val:
+        if key in ("atm", "dilution") and val:
             m["dilution"] = True
-            m.setdefault("dilution_detail", []).append({"kind": "program ATM (weryfikacja)", "date": as_of,
-                                                        "source": note, "url": url})
+            kind = "program ATM (weryfikacja)" if key == "atm" else f"weryfikacja: {note.split(';')[0]}"
+            m.setdefault("dilution_detail", []).append({"kind": kind, "date": as_of, "source": note, "url": url})
         src.add(t, key, val, "weryfikacja ręczna", url, as_of, note=note)
 
 
@@ -364,7 +364,7 @@ def result_row(t, base, m, s, in_top) -> dict:
         "ticker": t, "spolka": base["name"], "sektor": sector,
         "kapitalizacja_usd": fmt(m.get("market_cap"), money=True), "p_fcf": fmt(m.get("p_fcf"), nd=1),
         "wzrost_przychodow_rr": fmt(m.get("rev_growth"), pct=True), "beta": fmt(m.get("beta")),
-        "odleglosc_od_szczytu": fmt(m.get("dist_from_high"), pct=True), "short_float": fmt(m.get("short_float"), pct=True),
+        "odleglosc_od_szczytu": fmt(m.get("dist_from_high_cons", m.get("dist_from_high")), pct=True), "short_float": fmt(m.get("short_float"), pct=True),
         "days_to_cover": fmt(m.get("days_to_cover"), nd=1), "pkt_fundamenty": s["pkt_fundamenty"],
         "pkt_technika": s["pkt_technika"], "pkt_squeeze": s["pkt_squeeze"], "pkt_katalizator": s["pkt_katalizator"],
         "kary": s["pkt_kary"], "wynik": s["wynik"], "opis_kar": " | ".join(f"{n} ({p})" for n, p in s["kary"]),
@@ -476,6 +476,8 @@ def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
         log(f"  szczegóły: {t}")
         details_stage(t, r, m, f, src, disc, today)
         apply_overrides(t, m, overrides.get(t, []), src, disc)
+        # Do prezentacji bierzemy ostrożniejszą (bliższą szczytu) z odległości wg Yahoo i Finviz.
+        m["dist_from_high_cons"] = max(v for v in (m.get("dist_from_high"), m.get("dist_from_high_finviz")) if v is not None)
         fails = hard_filter_failures(m)
         if fails:
             drop(t, r["name"], "kontrola końcowa", "; ".join(fails), m.get("finviz_url", ""))
@@ -490,7 +492,10 @@ def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
     for t, r, m, s in ranked:
         if len(top) >= TOP_N:
             break
-        reasons = self_check(m) + ([s["dyskwalifikacja"]] if s["dyskwalifikacja"] else [])
+        reasons = self_check(m)
+        if s["dyskwalifikacja"]:
+            kinds = "; ".join(sorted({d["kind"] for d in m.get("dilution_detail", [])}))
+            reasons.append(f"{s['dyskwalifikacja']} ({kinds})" if kinds else s["dyskwalifikacja"])
         if reasons:
             late.append({"ticker": t, "spolka": r["name"], "powod": "; ".join(reasons), "wynik": s["wynik"]})
             continue

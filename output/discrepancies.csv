@@ -1,0 +1,24 @@
+ticker,metryka,screener_finviz,sprawozdanie_lub_wyliczenie,uwagi
+ALLT,dilution,False,True,"weryfikacja ręczna: shelf F-3 skuteczny od 3.04.2025 (do 2028), użyty do emisji 5 mln akcji po 8 USD w czerwcu 2025 https://www.sec.gov/Archives/edgar/data/1365767/000121390025057818/ea0246875-424b5_allotltd.htm"
+AMSC,beta,3.32,1.992,własna: 2 lata tygodniowo vs SPY
+AMSC,dilution,False,True,"weryfikacja ręczna: shelf S-3 nr 333-281496 skuteczny od 12.08.2024 (do 2027), użyty do emisji 115,5 mln USD w czerwcu 2025 https://www.sec.gov/Archives/edgar/data/880807/000119312525139243/d795155d8k.htm"
+AMSC,one_off,False,True,"weryfikacja ręczna: rozwiązanie odpisu na aktywa podatkowe: 113,1 mln USD w III kw. FY2025 (w zysku TTM); FCF bez zmian https://ir.amsc.com/news-releases/news-release-details/amsc-reports-fourth-quarter-and-fiscal-year-2025-financial"
+BAND,beta,3.13,1.6383,własna: 2 lata tygodniowo vs SPY
+BAND,dilution,False,True,"weryfikacja ręczna: emisja obligacji zamiennych 0% 2032 na 316,3 mln USD, cena konwersji 72,64 USD; hedging arbitrażystów zawyża short interest https://www.sec.gov/Archives/edgar/data/0001514416/000151441626000045/q22026exh991convdebtpricin.htm"
+CERT,p_fcf,16.46,24.3699,Finviz liczy na inny dzień/definicję
+CERT,wzrost_przychodow_rr,-0.1081,0.0099,
+CERT,beta,1.34,1.8046,własna: 2 lata tygodniowo vs SPY
+CLFD,p_fcf,25.08,60.249,Finviz liczy na inny dzień/definicję
+CLFD,wzrost_przychodow_rr,-0.121,0.1318,
+CLFD,beta,2.07,1.4419,własna: 2 lata tygodniowo vs SPY
+INOD,beta,3.04,4.0617,własna: 2 lata tygodniowo vs SPY
+INOD,atm,False,True,weryfikacja ręczna: S-3ASR i prospekt 424B5 at-the-market z umową sprzedaży (8-K z 6.08.2026) https://www.sec.gov/Archives/edgar/data/0000903651/000110465926092131/tm2622086-4_424b5.htm
+TASK,beta,1.95,1.461,własna: 2 lata tygodniowo vs SPY
+TASK,dilution,False,True,weryfikacja ręczna: shelf S-3 nr 333-280707: do 500 mln USD emisji i odsprzedaż 70 mln akcji przez głównych akcjonariuszy https://www.sec.gov/Archives/edgar/data/1829864/000119312524175614/d843284ds3.htm
+TASK,legal,False,True,"weryfikacja ręczna: pozew zbiorowy Estrada v. TaskUs / MDL Coinbase (SDNY), w poprawionym pozwie zarzut ukrycia naruszenia w dokumentach SEC https://news.bloomberglaw.com/litigation/taskus-employees-responsible-for-coinbase-data-breach-suit-says"
+AEO,one_off,False,True,weryfikacja ręczna: zwrot ceł IEEPA: 161 mln USD netto w wyniku operacyjnym II kw. FY2026; FCF bez niego nadal dodatni https://fashionunited.com/news/business/tariff-refunds-boost-american-eagle-outfitters-q2-performance/2026091074535
+EBS,wzrost_przychodow_rr,0.6629,0.7406,
+EBS,rev_growth,0.7405986185725248,0.66,"weryfikacja ręczna: komunikat spółki: przychody II kw. 2026 234,3 mln USD, +66% r/r (Yahoo: 226,8 mln USD, +74%) https://www.biospace.com/press-releases/emergent-biosolutions-reports-second-quarter-2026-financial-results"
+EBS,dilution,False,True,"weryfikacja ręczna: shelf S-3 na 250 mln USD (7.08.2025) i umowa ATM z 2023 r. (140,9 mln USD niewykorzystane); skuteczności S-3 nie potwierdzono, przyjęto ostrożnie jako aktywny https://www.sec.gov/Archives/edgar/data/1367644/000119312525175438/d926581ds3.htm"
+KODK,one_off,False,True,"weryfikacja ręczna: zwrot nadwyżki planu emerytalnego KRIP: 767 mln USD dla spółki, w tym 609 mln USD gotówki https://www.barchart.com/story/news/36418074/kodak-completes-pension-reversion-process-delivering-over-1-billion-to-strengthen-balance-sheet-fully-fund-new-benefit-plan-and-accelerate-growth"
+NXDR,legal,False,True,"weryfikacja ręczna: pozew zbiorowy akcjonariuszy z 02.2024 (N.D. Cal.), w toku według 10-Q za I kw. 2026 https://www.sec.gov/Archives/edgar/data/0001846069/000184606926000098/nxdr-20260331.htm"

@@ -80,7 +80,7 @@ def universe_exclusion(row: dict) -> str | None:
     if _SPAC_NAME.search(name):
         return "SPAC (nazwa)"
     if row["country"] in CHINA_COUNTRIES:
-        return f"spółka z {row['country']}"
+        return "spółka z " + {"China": "Chin", "Hong Kong": "Hongkongu", "Macau": "Makau"}[row["country"]]
     if "real estate investment trust" in row["industry"].lower():
         return "REIT (branża)"
     return None

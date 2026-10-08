@@ -23,7 +23,8 @@ _REGAIN = re.compile(r"regain(?:s|ed)? compliance", re.I)
 _GOING_CONCERN = re.compile(r"going concern", re.I)
 _CLASS_ACTION = re.compile(r"class action", re.I)
 _FILED = re.compile(r"lawsuit|filed|deadline|lead plaintiff|sued", re.I)
-_SHORT_SELLERS = re.compile(r"short[- ]seller|short report|Hindenburg|Muddy Waters|Culper|Spruce Point|Grizzly|"
+# Ogólne "short sellers" pomijamy: kanał Finviz zawiera artykuły o innych spółkach.
+_SHORT_SELLERS = re.compile(r"short[- ]seller report|short report|Hindenburg|Muddy Waters|Culper|Spruce Point|Grizzly|"
                             r"Wolfpack|Fuzzy Panda|Kerrisdale|Blue Orca|Bleecker Street|Citron|Viceroy|Iceberg Research|"
                             r"Morpheus|Night Market|Scorpion Capital|J Capital|Gotham City", re.I)
 _SEC_PROBE = re.compile(r"Wells notice|\bSEC\b.{0,40}(?:subpoena|investigation|probe|charges|inquiry)|"

@@ -1,0 +1,134 @@
+{
+ "CLFD": {
+  "teza": "Clearfield wraca do wzrostu: sprzedaż z działalności kontynuowanej w III kw. FY2026 wzrosła o 13% r/r, a tuż po kwartale spółka dostała pierwsze duże zamówienie od operatora centrów danych hyperscale (ok. 22 mln USD, czyli ok. 15% rocznej sprzedaży). Bilans bez długu (ok. 155 mln USD gotówki i inwestycji) oraz skup akcji ograniczają ryzyko, a 10,7 dnia pokrycia shortów daje paliwo na wypadek pozytywnej niespodzianki w wynikach.",
+  "ryzyko": "Spółka obniżyła prognozę na FY2026 (EPS w IV kw. 0–0,07 USD) z powodu słabego popytu operatorów światłowodowych, a portfel zamówień spadł o 34% kw/kw. Wycena jest wysoka (P/FCF 60 wg Yahoo, 25 wg Finviz), więc rozczarowanie w wynikach może szybko zepchnąć kurs pod poziom unieważnienia.",
+  "katalizator": "Wyniki IV kw. FY2026: 24.11.2026 (Nasdaq, data ogłoszona); dostawy zamówienia hyperscale od początku FY2027 (od października 2026, komunikat z 5.08.2026).",
+  "weryfikacja": "Wzrost +13% potwierdzony w komunikacie (działalność kontynuowana po sprzedaży Nestor; Finviz pokazuje -12,1% wobec danych sprzed przekształcenia). Zwrot ceł 0,655 mln USD w III kw. jest mniejszy niż jednorazowy odpis zapasów 2,6 mln USD, więc nie podbija zysku i nie daje kary. Największy klient: 18% sprzedaży. Brak ATM, aktywnego S-3 (S-3ASR z 2022 wygasł w 2025) i pozwów. FCF TTM wg Yahoo (7 mln USD) jest wyraźnie niższy niż wynika z P/FCF Finviz (ok. 18 mln USD) – prawdopodobnie Yahoo uwzględnia przepływy działalności zaniechanej; w obu ujęciach P/FCF > 20, więc punktacja się nie zmienia.",
+  "zrodla": [
+   {
+    "opis": "Wyniki III kw. FY2026 (GlobeNewswire, 5.08.2026)",
+    "url": "https://www.globenewswire.com/news-release/2026/08/05/3339627/0/en/Clearfield-Reports-Third-Quarter-Fiscal-2026-Results.html"
+   },
+   {
+    "opis": "10-K FY2025 (koncentracja klientów)",
+    "url": "https://www.sec.gov/Archives/edgar/data/796505/000117184325007594/clfd20250930_10k.htm"
+   },
+   {
+    "opis": "S-3ASR z 28.04.2022",
+    "url": "https://www.sec.gov/Archives/edgar/data/796505/000117184322002951/s3asr_042822.htm"
+   }
+  ]
+ },
+ "EGHT": {
+  "teza": "8x8 generuje ok. 46 mln USD FCF TTM przy kapitalizacji ok. 310 mln USD (P/FCF 6,7), a FCF rośnie r/r. Przychody rosną piąty kwartał z rzędu (+5% r/r w I kw. FY2027), a spółka spłaca dług (kredyt terminowy spadł ze 122 do 107,5 mln USD w jeden kwartał). Przy becie ok. 2,2 nawet niewielkie podniesienie prognozy może dać duży ruch.",
+  "ryzyko": "Marża brutto spada (61% wobec 66% rok wcześniej), a wzrost przychodów jest jednocyfrowy na konkurencyjnym rynku UCaaS/CCaaS. Kurs jest dokładnie na granicy filtra (25,0% pod szczytem), a obligacje zamienne na 202 mln USD zapadają w 2028 r., więc refinansowanie może skończyć się emisją.",
+  "katalizator": "Wyniki II kw. FY2027: 3.11.2026 (Nasdaq, data ogłoszona).",
+  "weryfikacja": "Brak ATM, nowej emisji i nowych obligacji zamiennych w 2026 r.; ostatni shelf (S-3ASR z 01.2022, odsprzedaż) wygasł. Brak pozwów zbiorowych z tytułu papierów wartościowych i raportów short sellerów w 2026 r. Odległość od szczytu dokładnie na progu: -25,0% (Yahoo i Finviz).",
+  "zrodla": [
+   {
+    "opis": "Wyniki I kw. FY2027 (8x8, 3.08.2026)",
+    "url": "https://www.8x8.com/newsroom/8x8-inc-reports-record-revenue-first-quarter-fiscal-year-2027"
+   },
+   {
+    "opis": "10-Q za kwartał do 30.06.2026",
+    "url": "https://www.sec.gov/Archives/edgar/data/0001023731/000102373126000114/eght-20260630.htm"
+   }
+  ]
+ },
+ "CERT": {
+  "teza": "Certara (oprogramowanie do symulacji biofarmaceutycznych) jest 35% pod szczytem przy dodatnim FCF (55 mln USD TTM) i stabilnych przychodach z działalności kontynuowanej (+1% r/r po wydzieleniu działu Regulatory & Medical Writing). Najmocniejszy argument to paliwo: short float 29,7% wg Finviz i 15 dni pokrycia wg Nasdaq, więc lepsze od oczekiwań wyniki mogą wymusić pokrywanie shortów.",
+  "ryzyko": "Usługi kurczą się (-3% r/r w II kw.), spółka ma stratę netto, a FCF TTM spadł r/r; zmiana CFO i ogłoszenia kancelarii o badaniu roszczeń akcjonariuszy pokazują nieufność rynku do prognozy 0–4% wzrostu. Źródła podają różny short float (18,9%–29,8% w zależności od definicji free float), więc paliwo squeeze może być mniejsze, niż pokazuje Finviz.",
+  "katalizator": "Wyniki III kw. 2026: 5.11.2026 (Nasdaq, data ogłoszona).",
+  "weryfikacja": "Wzrost przychodów +1% r/r potwierdzony w komunikacie (dane z działalności kontynuowanej; Finviz -10,8% porównuje z danymi sprzed przekształcenia). Pozwu zbiorowego nie złożono: kancelaria Pomerantz prowadzi tylko „badanie roszczeń”, więc bez kary. Shelf S-3ASR z 05.2022 wygasł, brak ATM.",
+  "zrodla": [
+   {
+    "opis": "Wyniki II kw. 2026 (Certara, 4.08.2026)",
+    "url": "https://www.certara.com/pressrelease/certara-reports-second-quarter-2026-financial-results/"
+   },
+   {
+    "opis": "Ogłoszenie Pomerantz (badanie roszczeń)",
+    "url": "https://www.newswire.com/news/investor-alert-pomerantz-law-firm-investigates-claims-on-behalf-of-9925483"
+   },
+   {
+    "opis": "Short interest (Equibles)",
+    "url": "https://equibles.com/stocks/cert/shortinterest"
+   }
+  ]
+ },
+ "ALLT": {
+  "teza": "Allot (Izrael, cyberbezpieczeństwo i zarządzanie ruchem dla operatorów) ma przychody +15% r/r, dodatni FCF (29 mln USD TTM), gotówkę netto i P/FCF ok. 14. Spółka podniosła prognozę przychodów na 2026 r. do 115–118 mln USD dzięki szybkiemu wzrostowi SECaaS, a kurs jest 32% pod szczytem z SMA50 już w trendzie wzrostowym.",
+  "ryzyko": "Koncentracja klientów rośnie: 10 największych odpowiadało za 57% przychodów w II kw. 2026 (41% w 2025), więc utrata jednego operatora mocno uderzy w wyniki. Aktywny shelf F-3 (od kwietnia 2025, już użyty do emisji w czerwcu 2025) oznacza ryzyko kolejnej emisji, stąd kara -2.",
+  "katalizator": "Wyniki III kw. 2026: 19.11.2026 (Nasdaq, data ogłoszona).",
+  "weryfikacja": "Brak programu ATM; emisja 5 mln akcji w 06.2025 (ponad 6 mies. temu) z shelfu F-3 skutecznego od 3.04.2025, więc kara za aktywny shelf. Udział największego pojedynczego klienta nie jest ujawniony (top 10 = 57%), więc bez kary za klienta > 30%. Spółka raportuje jako emitent zagraniczny (6-K), stąd brak FCF sprzed roku w Yahoo.",
+  "zrodla": [
+   {
+    "opis": "Wyniki II kw. 2026 (Barchart/PRN)",
+    "url": "https://www.barchart.com/story/news/3799285/allot-announces-second-quarter-2026-financial-results"
+   },
+   {
+    "opis": "6-K II kw. 2026 (top 10 klientów)",
+    "url": "https://www.sec.gov/Archives/edgar/data/0001365767/000117891326004464/exhibit_99-1.htm"
+   },
+   {
+    "opis": "424B5 z czerwca 2025 (shelf F-3)",
+    "url": "https://www.sec.gov/Archives/edgar/data/1365767/000121390025057818/ea0246875-424b5_allotltd.htm"
+   }
+  ]
+ },
+ "NXDR": {
+  "teza": "Nextdoor ma już dodatnią EBITDA i FCF (12 mln USD TTM wobec 1,5 mln USD rok wcześniej), przychody rosną 15% r/r, a spółka podniosła prognozę na 2026 r. Ok. 378 mln USD gotówki przy kapitalizacji ok. 950 mln USD i skup akcji za 100 mln USD dają oparcie wycenie.",
+  "ryzyko": "P/FCF ok. 77 zakłada dalszą szybką poprawę rentowności, a prognoza EBITDA na III kw. (6,5–8 mln USD) jest niższa niż wynik II kw. Toczy się pozew zbiorowy akcjonariuszy z 2024 r., a insiderzy sprzedali akcje za 1,3 mln USD w 90 dni (kary -2 i -1).",
+  "katalizator": "Wyniki III kw. 2026: 4.11.2026 (Nasdaq, data ogłoszona).",
+  "weryfikacja": "Pozew zbiorowy z 02.2024 nadal w toku według 10-Q za I kw. 2026, więc kara -2. Brak ATM i aktywnego shelfu (S-3 z 12.2022 wygasł); skup akcji 100 mln USD (05.2026).",
+  "zrodla": [
+   {
+    "opis": "Wyniki II kw. 2026 (Nextdoor, 4.08.2026)",
+    "url": "https://investors.nextdoor.com/news/news-details/2026/Nextdoor-Reports-Second-Quarter-2026-Results/default.aspx"
+   },
+   {
+    "opis": "10-Q za I kw. 2026 (postępowania sądowe)",
+    "url": "https://www.sec.gov/Archives/edgar/data/0001846069/000184606926000098/nxdr-20260331.htm"
+   }
+  ]
+ },
+ "AEO": {
+  "teza": "AEO rośnie dzięki Aerie (sprzedaż porównywalna +19% w II kw.), cała grupa ma +6% LFL, a FCF TTM 343 mln USD daje P/FCF ok. 8,7. Spółka podniosła prognozę zysku operacyjnego na rok i oczekuje w III kw. wzrostu LFL o średnią-wysoką jednocyfrową wartość, a kurs jest 38% pod szczytem.",
+  "ryzyko": "Wynik II kw. jest podbity jednorazowym zwrotem ceł IEEPA (161 mln USD netto w wyniku operacyjnym), więc bazowa rentowność jest słabsza, niż sugeruje raport (kara -2). Beta ledwie przekracza próg (1,22 własna, 1,34 Finviz), a główna marka American Eagle traci (LFL -1%).",
+  "katalizator": "Wyniki III kw. FY2026: 1.12.2026 (Nasdaq, data ogłoszona).",
+  "weryfikacja": "Jednorazówka potwierdzona: zwrot ceł IEEPA 179 mln USD w marży brutto, 161 mln USD netto w wyniku operacyjnym; FCF TTM bez niej nadal dodatni. Pozwy zbiorowe konsumenckie (ceny, dane, sprawy pracownicze) nie dotyczą papierów wartościowych, więc bez kary, ale to ryzyko. Brak aktywnego shelfu i ATM w wynikach wyszukiwania.",
+  "zrodla": [
+   {
+    "opis": "Wyniki II kw. FY2026 (AEO, 9.09.2026)",
+    "url": "https://secure.businesswire.com/news/home/20260909455623/en/AEO-Inc.-Reports-Second-Quarter-Fiscal-2026-Results"
+   },
+   {
+    "opis": "Zwrot ceł w II kw. (FashionUnited)",
+    "url": "https://fashionunited.com/news/business/tariff-refunds-boost-american-eagle-outfitters-q2-performance/2026091074535"
+   }
+  ]
+ },
+ "TASK": {
+  "teza": "TaskUs jest bardzo tanio wyceniany (P/FCF ok. 6) przy rosnących przychodach (+5% r/r w II kw.) i szybko rosnącym segmencie AI Services (+26%). Kurs ok. 7,9 USD to mniej niż połowa ceny z oferty przejęcia przez Blackstone i założycieli (16,50 USD), którą akcjonariusze odrzucili w 2025 r. jako za niską, co pokazuje, ile był gotów zapłacić inwestor finansowy.",
+  "ryzyko": "Zlecenia od największego klienta (Meta, 26% przychodów w 2025) spadają, a prognoza na III kw. (300–302 mln USD) jest poniżej konsensusu. Spółka jest pozwana w zbiorowej sprawie o wyciek danych klientów Coinbase i ma aktywny shelf S-3 na 500 mln USD z możliwością odsprzedaży akcji przez głównych akcjonariuszy (kary -2 i -2).",
+  "katalizator": "Wyniki III kw. 2026: 6.11.2026 (Nasdaq, data ogłoszona).",
+  "weryfikacja": "Meta 26% przychodów (10-K 2025), poniżej progu 30%. Pozew zbiorowy akcjonariuszy z 2022 r. zakończony ugodą 17,5 mln USD (12.2025); toczy się pozew o wyciek danych Coinbase (MDL, SDNY) z zarzutem ukrycia naruszenia w dokumentach SEC, więc kara -2. Shelf S-3 z 07.2024 aktywny do 2027 r., więc kara -2. Szczyt 52-tyg. wg Yahoo (16,49 USD) pochodzi z 8.10.2025, czyli dnia odrzucenia przejęcia, i wypada z okna 52 tygodni; wg Finviz kurs jest 27% pod szczytem, nadal powyżej progu 25%.",
+  "zrodla": [
+   {
+    "opis": "Wyniki II kw. 2026 (TaskUs, 5.08.2026)",
+    "url": "https://secure.businesswire.com/news/home/20260805409974/en/TaskUs-Announces-Fiscal-Second-Quarter-2026-Results"
+   },
+   {
+    "opis": "Odrzucenie przejęcia (8.10.2025)",
+    "url": "https://www.businesswire.com/news/home/20251008065888/en/TaskUs-Inc.-Announces-Results-of-Special-Meeting-of-Stockholders-and-Expects-to-Terminate-Proposed-Take-Private-Transaction"
+   },
+   {
+    "opis": "Pozew o wyciek danych Coinbase (Bloomberg Law)",
+    "url": "https://news.bloomberglaw.com/litigation/taskus-employees-responsible-for-coinbase-data-breach-suit-says"
+   },
+   {
+    "opis": "S-3 z 5.07.2024",
+    "url": "https://www.sec.gov/Archives/edgar/data/1829864/000119312524175614/d843284ds3.htm"
+   }
+  ]
+ }
+}

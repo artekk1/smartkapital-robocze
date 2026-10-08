@@ -116,6 +116,8 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(len(f["legal"]), 1)
         self.assertEqual(len(f["verify"]), 1)
         self.assertTrue(checks.red_flags(news[:1], TODAY)["delisting"])
+        other = [{"date": date(2026, 9, 3), "title": "Short Sellers Are Ganging Up on Beyond Meat Stock"}]
+        self.assertEqual(checks.red_flags(other, TODAY)["legal"], [])
 
     def test_insiders_window(self):
         ins = checks.insiders(market.nasdaq_insider_trades(fx.nasdaq_insider()), TODAY)

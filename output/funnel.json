@@ -1,0 +1,7 @@
+{
+ "1. spółki notowane na NYSE, Nasdaq, NYSE American (Nasdaq screener)": 7009,
+ "2. kapitalizacja ok. 300 mln - 3 mld USD, akcje zwykłe, bez SPAC/REIT/Chin": 1733,
+ "3. obrót > 2 mln USD, F3 beta > 1,2, F4 >= 25% pod szczytem, F5 kurs nad SMA50": 47,
+ "4. F1 FCF TTM > 0, F2 przychody kw. r/r rosną, kapitalizacja 300 mln - 3 mld (akcje x kurs)": 13,
+ "5. F6 (delisting, going concern), kontrola krzyżowa z Finviz, weryfikacja ręczna": 11
+}

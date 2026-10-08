@@ -17,6 +17,8 @@ def _f(x, kind="num", nd=2) -> str:
         return f"{x * 100:.1f}%".replace(".", ",")
     if kind == "mln":
         return f"{x / 1e6:,.0f}".replace(",", " ") + " mln USD"
+    if kind == "shares":
+        return f"{x / 1e6:,.1f}".replace(",", " ").replace(".", ",") + " mln akcji"
     if kind == "usd":
         return f"{x:,.2f}".replace(",", " ").replace(".", ",") + " USD"
     return f"{x:.{nd}f}".replace(".", ",")
@@ -93,13 +95,18 @@ def write_report(path: Path, *, today: date, universe_date: str, top: list, sque
          "dane finansowe z ostatnich opublikowanych kwartałów (okres podany przy każdej spółce). "
          f"Po filtrach twardych zostało {n_scored} spółek (pełna lista: `results.csv`, źródło i data każdej liczby: `sources.csv`).", "",
          "> Materiał analityczny, nie rekomendacja inwestycyjna. Small-capy z betą > 1,2 potrafią tracić 20-30% w kilka sesji.", "",
-         f"## TOP {len(top)}", "",
+         f"## TOP {len(top)}", ""]
+    if len(top) < 10:
+        L += [f"Wszystkie filtry, kary i samokontrolę przeszło tylko {len(top)} spółek. Listy nie uzupełniano spółkami, "
+              "które nie spełniają kryteriów (powody: sekcja „Odrzucone w ostatniej chwili”). Kolumna „Od szczytu” pokazuje "
+              "ostrożniejszą z wartości Yahoo i Finviz.", ""]
+    L += [
          "| # | Ticker | Spółka | Wynik | F | T | S | K | Kary | Kurs | Od szczytu | Beta | P/FCF | Przychody r/r | Short float | DTC | Unieważnienie |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for i, (t, base, m, s) in enumerate(top, 1):
         L.append(f"| {i} | {t} | {base['name']} | **{s['wynik']}** | {s['pkt_fundamenty']} | {s['pkt_technika']} | "
                  f"{s['pkt_squeeze']} | {s['pkt_katalizator']} | {s['pkt_kary']} | {_f(m['price'])} | "
-                 f"{_f(m['dist_from_high'], 'pct')} | {_f(m.get('beta'))} | {_f(m.get('p_fcf'), nd=1)} | "
+                 f"{_f(m.get('dist_from_high_cons', m['dist_from_high']), 'pct')} | {_f(m.get('beta'))} | {_f(m.get('p_fcf'), nd=1)} | "
                  f"{_f(m.get('rev_growth'), 'pct')} | {_f(m.get('short_float'), 'pct')} | {_f(m.get('days_to_cover'), nd=1)} | "
                  f"{_f(m.get('invalidation'))} |")
     L.append("")
@@ -113,7 +120,7 @@ def write_report(path: Path, *, today: date, universe_date: str, top: list, sque
           "|---|---|---|---|---|---|---|---|---|"]
     for i, (t, base, m, s) in enumerate(squeeze, 1):
         L.append(f"| {i} | {t} | {base['name']} | {_f(m.get('short_float'), 'pct')} ({m.get('short_float_src', '')}) | "
-                 f"{_f(m.get('days_to_cover'), nd=1)} | {m.get('si_date', 'b.d.')} (Nasdaq) | {_f(m.get('float_finviz'), 'mln')} (Finviz) | "
+                 f"{_f(m.get('days_to_cover'), nd=1)} | {m.get('si_date', 'b.d.')} (Nasdaq) | {_f(m.get('float_finviz'), 'shares')} (Finviz) | "
                  f"{s['wynik']} | {_catalyst(t, m, notes.get(t, {}))} |")
     if not squeeze:
         L.append("| – | brak spółek spełniających warunek | | | | | | | |")
@@ -175,6 +182,12 @@ def write_report(path: Path, *, today: date, universe_date: str, top: list, sque
           "- Nagłówki Finviz obejmują ok. 100 ostatnich wiadomości. Przy spółkach z dużą liczbą newsów to kilka tygodni.",
           "- Daty wyników oznaczone jako szacunkowe pochodzą z algorytmu Zacks i mogą się przesunąć.",
           "- Beta zależy od okna i benchmarku; dlatego wymagamy > 1,2 w obu ujęciach.",
+          "- Yahoo nie podaje FCF TTM sprzed roku dla części spółek (m.in. emitentów zagranicznych i spółek z niestandardowym "
+          "rokiem obrotowym). Wtedy punkt „FCF rośnie r/r” nie jest przyznawany (b.d. w danych spółki).",
+          "- FCF w agregacji Yahoo może obejmować działalność zaniechaną. Przy dużej różnicy z Finviz obie wartości są w danych "
+          "spółki i w `discrepancies.csv`.",
+          "- Koncentracja klientów, aktywne shelfy, ATM, pozwy i katalizatory spoza wyników zostały sprawdzone ręcznie tylko dla "
+          "spółek, które przeszły filtry twarde (wyniki w `overrides.csv` ze źródłami).",
           f"- Rozbieżności między Finviz a danymi ze sprawozdań/wyliczeniami: {len(disc)} (pełna lista: `discrepancies.csv`). "
           "W punktacji liczą się dane ze sprawozdań i własne wyliczenia.", ""]
     path.write_text("\n".join(L) + "\n", encoding="utf-8")
