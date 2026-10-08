@@ -447,7 +447,8 @@ def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
         if m is None:
             drop(t, r["name"], "kurs", err)
             continue
-        fails = hard_filter_failures({**m, "fcf_ttm": 1, "rev_growth": 1})  # finanse sprawdzamy w etapie 3
+        # Finanse i ostateczną kapitalizację (akcje ze sprawozdania x kurs) sprawdzamy w etapie 3.
+        fails = hard_filter_failures({**m, "fcf_ttm": 1, "rev_growth": 1, "market_cap": CAP_MIN})
         if fails:
             drop(t, r["name"], "kurs/technika", "; ".join(fails), m["price_url"])
             continue
