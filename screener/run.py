@@ -14,7 +14,7 @@ from pathlib import Path
 from . import edgar, market, xbrl
 from .net import Doc, Fetcher, FetchError, NotFound
 from .scoring import CAP_MAX, CAP_MIN, hard_filter_failures, score
-from .tech import from_yahoo_chart, technicals
+from .tech import from_stooq_csv, from_yahoo_chart, technicals
 
 # Margines przy wstępnym filtrze kapitalizacji z Nasdaq; ostateczny filtr liczymy
 # z liczby akcji z raportu SEC x kurs.
@@ -52,6 +52,19 @@ def xbrl_src(v: xbrl.Value) -> str:
 def xbrl_url(cik: int, v: xbrl.Value) -> str:
     latest = max(v.parts, key=lambda p: p.filed)
     return edgar.archive_url(cik, latest.accn)
+
+
+def load_prices(f: Fetcher, symbol: str):
+    """Notowania dzienne: Yahoo, a gdy niedostępne - Stooq. Zwraca (DataFrame, Doc, nazwa źródła)."""
+    try:
+        doc = f.get(market.YAHOO_CHART_URL.format(sym=market.yahoo_symbol(symbol)))
+        return from_yahoo_chart(doc.data)[0], doc, "Yahoo Finance chart API"
+    except (FetchError, ValueError, KeyError) as yahoo_err:
+        try:
+            doc = f.get(market.STOOQ_URL.format(sym=market.yahoo_symbol(symbol).lower()), as_json=False)
+            return from_stooq_csv(doc.data), doc, "Stooq"
+        except (FetchError, ValueError, KeyError) as stooq_err:
+            raise FetchError(f"Yahoo: {yahoo_err}; Stooq: {stooq_err}") from stooq_err
 
 
 # ---------------------------------------------------------------- etap 2: fundamenty
@@ -540,13 +553,12 @@ def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
     log(f"po fundamentach: {len(stage2)}")
 
     # 3. Kurs i technika
-    bench_df, _ = from_yahoo_chart(f.get(market.YAHOO_CHART_URL.format(sym="SPY")).data)
+    bench_df, _, _ = load_prices(f, "SPY")
     stage3 = []
     for r in stage2:
         t, m = r["ticker"], r["m"]
         try:
-            yd = f.get(market.YAHOO_CHART_URL.format(sym=market.yahoo_symbol(r["symbol"])))
-            df, meta = from_yahoo_chart(yd.data)
+            df, yd, price_src = load_prices(f, r["symbol"])
         except (FetchError, ValueError, KeyError) as e:
             drop(t, r["name"], "kurs", f"brak notowań: {e}")
             continue
@@ -563,7 +575,7 @@ def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
             note = f"52 tyg. szczyt z {tech['high_52w_date']}" if key == "high_52w" else ""
             if key == "beta":
                 note = f"tygodniowe stopy zwrotu, {tech['beta_weeks']} tyg., benchmark SPY"
-            src.add(t, label, m[key], "Yahoo Finance chart API (wyliczone)", yd.url, tech["date"], yd.retrieved_at, note)
+            src.add(t, label, m[key], f"{price_src} (wyliczone)", yd.url, tech["date"], yd.retrieved_at, note)
         if tech["breakout"]:
             b = tech["breakout"]
             src.add(t, "wybicie_3m", b["close"], f"zamknięcie > max 63 sesji ({b['level_3m']:.2f}), wolumen x{b['vol_ratio']:.1f}",

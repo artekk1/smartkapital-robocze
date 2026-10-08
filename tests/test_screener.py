@@ -9,7 +9,7 @@ import pandas as pd
 
 from screener import edgar, market, run, scoring, xbrl
 from screener.net import Doc, Fetcher, NotFound
-from screener.tech import from_yahoo_chart, technicals
+from screener.tech import from_stooq_csv, from_yahoo_chart, technicals
 from tests import fixtures as fx
 
 TODAY = date(2026, 10, 8)
@@ -175,7 +175,30 @@ class FakeFetcher(Fetcher):
         raise NotFound(url)
 
 
+def stooq_csv(chart_js):
+    df, _ = from_yahoo_chart(chart_js)
+    lines = ["Date,Open,High,Low,Close,Volume"]
+    lines += [f"{i.date()},{r.open},{r.high},{r.low},{r.close},{r.volume:.0f}" for i, r in df.iterrows()]
+    return "\n".join(lines) + "\n"
+
+
 class EndToEndTest(unittest.TestCase):
+    def test_stooq_fallback_when_yahoo_fails(self):
+        f = FakeFetcher()
+        stock = fx.prices(TODAY)[1]
+        f.routes = [r for r in f.routes if r[0] != "chart/TEST"] + [("stooq.com", lambda u: stooq_csv(stock))]
+        with tempfile.TemporaryDirectory() as tmp:
+            run.main(["--out", tmp, "--as-of", TODAY.isoformat(), "--overrides", f"{tmp}/none.csv"], fetcher=f)
+            self.assertIn("https://stooq.com/q/d/l/?s=test.us&i=d", f.calls)
+            src = list(csv.DictReader(open(Path(tmp) / "sources.csv", encoding="utf-8")))
+            self.assertEqual({s["zrodlo"] for s in src if s["metryka"] == "kurs"}, {"Stooq (wyliczone)"})
+            rows = list(csv.DictReader(open(Path(tmp) / "results.csv", encoding="utf-8")))
+            self.assertEqual([r["ticker"] for r in rows], ["TEST"])
+
+    def test_stooq_error_page_is_rejected(self):
+        with self.assertRaises(ValueError):
+            from_stooq_csv("Exceeded the daily hits limit")
+
     def test_full_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             f = FakeFetcher()

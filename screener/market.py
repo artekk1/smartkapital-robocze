@@ -8,7 +8,8 @@ from datetime import date, datetime
 
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&download=true&exchange={ex}"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=2y&interval=1d&includeAdjustedClose=true"
-FINVIZ_QUOTE_URL = "https://finviz.com/quote.ashx?t={sym}&p=d"
+STOOQ_URL = "https://stooq.com/q/d/l/?s={sym}.us&i=d"
+FINVIZ_QUOTE_URL ="https://finviz.com/quote.ashx?t={sym}&p=d"
 NASDAQ_SHORT_URL = "https://api.nasdaq.com/api/quote/{sym}/short-interest?assetClass=stocks"
 NASDAQ_EARNINGS_URL = "https://api.nasdaq.com/api/analyst/{sym}/earnings-date"
 

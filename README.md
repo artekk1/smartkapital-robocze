@@ -13,6 +13,7 @@ Pipeline pobiera dane z tych hostów. Wszystkie muszą być dozwolone w polityce
 | `api.nasdaq.com` | uniwersum spółek (screener), short interest, daty wyników |
 | `www.sec.gov`, `data.sec.gov`, `efts.sec.gov` | XBRL (10-Q/10-K), lista zgłoszeń, Form 4, wyszukiwanie pełnotekstowe |
 | `query1.finance.yahoo.com` | notowania dzienne (SMA50, 52-tyg. szczyt, beta, obroty) |
+| `stooq.com` | notowania zapasowo, gdy Yahoo nie odpowiada |
 | `finviz.com` | short float, short ratio, beta (porównanie) |
 
 SEC wymaga nagłówka User-Agent z danymi kontaktowymi:

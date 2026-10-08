@@ -1,6 +1,7 @@
 """Wskaźniki techniczne z dziennych notowań (Yahoo Finance chart API)."""
 from __future__ import annotations
 
+import io
 from datetime import datetime, timezone
 
 import numpy as np
@@ -22,6 +23,17 @@ def from_yahoo_chart(js: dict) -> tuple[pd.DataFrame, dict]:
     df = df.dropna(subset=["close", "high", "low", "volume"])
     df = df[~df.index.duplicated(keep="last")]
     return df.astype(float), r.get("meta", {})
+
+
+def from_stooq_csv(text: str, sessions: int = 520) -> pd.DataFrame:
+    """CSV ze Stooq (Date,Open,High,Low,Close,Volume); ceny skorygowane o splity i dywidendy."""
+    if not text.startswith("Date,"):
+        raise ValueError(f"Stooq: {text[:80].strip()!r}")
+    df = pd.read_csv(io.StringIO(text), parse_dates=["Date"], index_col="Date")
+    df.columns = [c.lower() for c in df.columns]
+    df = df.dropna(subset=["close", "high", "low", "volume"]).tail(sessions)
+    df["adjclose"] = df["close"]
+    return df[["open", "high", "low", "close", "adjclose", "volume"]].astype(float)
 
 
 def pivot_lows(lows: pd.Series, k: int) -> list[tuple[pd.Timestamp, float]]:
